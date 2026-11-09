@@ -28,5 +28,12 @@ done
 V=$(python3 -c 'import json;print(json.load(open("update.json"))["version"])')
 git add -A
 git commit -q -m "Summit OS $V: $1"
-git push -q origin HEAD
+# push with the token kept outside the repository (never written to git config)
+TOKEN_FILE="${SUMMIT_TOKEN_FILE:-$HOME/.summit-gh-token}"
+if [ -f "$TOKEN_FILE" ]; then
+  B64=$(printf 'x-access-token:%s' "$(cat "$TOKEN_FILE")" | base64 -w0)
+  git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $B64" push -q origin HEAD
+else
+  git push -q origin HEAD
+fi
 echo "Published Summit OS $V"
