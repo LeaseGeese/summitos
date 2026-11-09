@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply a Summit OS update to the running desktop
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/summit-update-session
+# desktop parts restarted by the script (dock, Spotlight) must outlive this job
+KillMode=process
+# so the notification has time to appear before the job ends
+TimeoutStartSec=120

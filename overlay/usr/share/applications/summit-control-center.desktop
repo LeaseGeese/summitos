@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Control Center
+Comment=Wi-Fi, Bluetooth, Dark Mode, sound and more
+Exec=summit-shell-ctl control-center
+Icon=summit-control-center-symbolic
+Terminal=false
+NoDisplay=true

@@ -1,0 +1,3 @@
+#!/bin/sh
+# tells the dock which launcher this window belongs to
+BAMF_DESKTOP_FILE_HINT=/usr/share/applications/summit-settings.desktop exec python3 /usr/local/lib/summitos/summit-settings.py "$@"

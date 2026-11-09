@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Summit Appearance
+Exec=summit-appearance-watch
+OnlyShowIn=XFCE;
+NoDisplay=true
+X-XFCE-Autostart-Override=true

@@ -1,0 +1,7 @@
+mode:		blank
+timeout:	0:10:00
+lock:		False
+dpmsEnabled:	True
+dpmsStandby:	0:20:00
+dpmsSuspend:	0:25:00
+dpmsOff:	0:30:00

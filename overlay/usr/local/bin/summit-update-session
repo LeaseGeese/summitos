@@ -1,0 +1,85 @@
+#!/bin/bash
+# Runs inside your desktop session when Summit installs an update (or one becomes available):
+# applies per-user changes, refreshes only the parts of the desktop the update touched,
+# and tells you what changed.
+D=/var/lib/summit-update
+SEEN="$HOME/.config/summit/update-seen"
+mkdir -p "$HOME/.config/summit"
+# one run at a time: a second trigger waits, then finds the update already handled
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/summit-update-session.lock"; flock -w 60 9 || true
+
+jget() { python3 - "$1" "$2" <<'PY' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1])); v = d.get(sys.argv[2], "")
+print("\n".join("• " + x for x in v[:4]) if isinstance(v, list) else v)
+PY
+}
+touched() {   # did the update change any file matching one of these patterns?
+  python3 - "$D/state.json" "$@" <<'PY'
+import json, sys, fnmatch
+files = json.load(open(sys.argv[1])).get("changed_files", [])
+sys.exit(0 if any(fnmatch.fnmatch(f, p) for f in files for p in sys.argv[2:]) else 1)
+PY
+}
+launch() {    # start a desktop part as its own app: outside this job, without our lock
+  systemd-run --user --quiet --collect --scope -- setsid "$@" >/dev/null 2>&1 < /dev/null 9>&- &
+}
+restart() {   # stop a desktop part, wait until it's really gone, start it again
+  pkill -u "$(id -u)" "${@:2}" "$1"
+  for i in $(seq 1 25); do pgrep -u "$(id -u)" "${@:2}" "$1" >/dev/null || break; sleep 0.2; done
+}
+
+# 1) an update is waiting (automatic install is off)
+if [ -f "$D/available.json" ]; then
+  key="avail-$(jget $D/available.json sha)$(jget $D/available.json build)"
+  if ! grep -qx "$key" "$SEEN" 2>/dev/null; then
+    echo "$key" >> "$SEEN"
+    ver=$(jget $D/available.json version)
+    ( exec 9>&-; act=$(notify-send -a "Software Update" -i summit-update -A install="Install Now" -A later="Later" \
+              "Summit OS $ver is available" "$(jget $D/available.json notes)")
+      [ "$act" = install ] && systemctl start --no-block summit-update-install.service ) &
+  fi
+fi
+
+# 2) an update was installed (or rolled back)
+[ -f "$D/state.json" ] || exit 0
+key="inst-$(jget $D/state.json sha)$(jget $D/state.json build)-$(jget $D/state.json installed_at)"
+grep -qx "$key" "$SEEN" 2>/dev/null && exit 0
+echo "$key" >> "$SEEN"
+
+[ -f "$D/current/user.sh" ] && bash "$D/current/user.sh" >/dev/null 2>&1
+
+if [ "$1" != "--login" ] && [ -n "$DISPLAY" ]; then
+  if touched 'usr/local/bin/summit-appearance' 'usr/share/themes/*' 'usr/share/icons/*' 'etc/xdg/picom*' 'usr/local/bin/summit-compositor'; then
+    summit-appearance apply >/dev/null 2>&1 9>&-                              # styles, colours, compositor
+  fi
+  if touched 'usr/local/bin/summit-shell*' 'usr/local/bin/summit-control-center' 'usr/share/icons/*' 'usr/share/applications/*'; then
+    restart bin/summit-shell -f; launch summit-shell      # Spotlight, Launchpad, Control Center
+  fi
+  if touched 'usr/share/plank/*' 'usr/share/icons/*' 'usr/share/applications/*' 'usr/share/summitos/icons/*'; then
+    restart plank -x; launch plank                       # dock
+  fi
+  if touched 'etc/xdg/xfce4/panel/*' 'usr/share/xfce4/panel/*' 'usr/lib/x86_64-linux-gnu/xfce4/panel/*'; then
+    xfce4-panel -r >/dev/null 2>&1 9>&- &                                                  # menu bar
+  fi
+  # self-heal: the dock, Spotlight and notifications should always be running
+  sleep 2
+  pgrep -u "$(id -u)" -f notifyd/xfce4-notifyd >/dev/null || launch /usr/lib/x86_64-linux-gnu/xfce4/notifyd/xfce4-notifyd
+  pgrep -u "$(id -u)" -x plank >/dev/null || launch plank
+  pgrep -u "$(id -u)" -f bin/summit-shell >/dev/null || launch summit-shell
+fi
+
+ver=$(jget $D/state.json version); notes=$(jget $D/state.json notes)
+if [ "$(jget $D/state.json restart)" = reboot ]; then
+  ( exec 9>&-; act=$(notify-send -a "Software Update" -i summit-update -u critical -A restart="Restart Now" -A later="Later" \
+            "Summit OS $ver installed" "Restart to finish updating.${notes:+$'\n'$notes}")
+    [ "$act" = restart ] && xfce4-session-logout --reboot ) &
+else
+  # wait until the notification service is back (it may restart with the desktop), then show what changed
+  for i in $(seq 1 20); do
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.GetServerInformation >/dev/null 2>&1 && break; sleep 0.5
+  done
+  notify-send -a "Software Update" -i summit-update "Summit OS updated to $ver" "${notes:-Your desktop was refreshed with the latest changes.}"
+fi
+tail -n 50 "$SEEN" > "$SEEN.tmp" 2>/dev/null && mv "$SEEN.tmp" "$SEEN"

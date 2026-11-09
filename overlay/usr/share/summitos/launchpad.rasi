@@ -1,0 +1,69 @@
+@import "/usr/share/summitos/theme-default.rasi"
+@import "~/.config/summit/theme.rasi"
+configuration {
+  show-icons: true;
+}
+* {
+  font: "Inter 11";
+  background-color: transparent;
+  text-color: #ffffff;
+}
+window {
+  transparency: "real";
+  fullscreen: true;
+  background-color: @lpglass;
+}
+mainbox {
+  padding: 5% 10% 4% 10%;
+  spacing: 42px;
+  children: [ inputbar, listview ];
+}
+inputbar {
+  children: [ pad1, entry, pad2 ];
+}
+pad1 {
+  expand: true;
+}
+pad2 {
+  expand: true;
+}
+entry {
+  width: 280px;
+  expand: false;
+  padding: 8px 16px;
+  border-radius: 12px;
+  background-color: rgba(255,255,255,0.18);
+  border: 1px;
+  border-color: rgba(255,255,255,0.30);
+  placeholder: "Search";
+  placeholder-color: rgba(255,255,255,0.7);
+  horizontal-align: 0.5;
+  cursor-color: #ffffff;
+}
+listview {
+  columns: 7;
+  lines: 4;
+  spacing: 26px;
+  flow: horizontal;
+  fixed-columns: true;
+  scrollbar: false;
+}
+element {
+  orientation: vertical;
+  padding: 14px 4px 10px 4px;
+  spacing: 10px;
+  border-radius: 22px;
+}
+element selected {
+  background-color: rgba(255,255,255,0.20);
+  border: 1px;
+  border-color: rgba(255,255,255,0.35);
+}
+element-icon {
+  size: 76px;
+  horizontal-align: 0.5;
+}
+element-text {
+  horizontal-align: 0.5;
+  text-color: inherit;
+}

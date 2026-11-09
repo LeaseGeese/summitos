@@ -1,0 +1,12 @@
+# Summit OS: pick the right I/O scheduler automatically.
+# Many USB-to-SATA enclosures wrongly report an SSD as "rotational". If the drive
+# supports TRIM/UNMAP (only SSDs do), correct that first.
+ACTION=="add|change", KERNEL=="sd[a-z]", ENV{ID_BUS}=="usb", ATTR{queue/rotational}=="1", ATTR{queue/discard_max_bytes}!="0", ATTR{queue/rotational}="0"
+# ...or the model name says it is an SSD (Samsung T5/T7/T9, SanDisk Extreme, anything "SSD")
+ACTION=="add|change", KERNEL=="sd[a-z]", ENV{ID_BUS}=="usb", ATTR{queue/rotational}=="1", ENV{ID_MODEL}=="*SSD*|*Ssd*|*ssd*|*T5*|*T7*|*T9*|*Extreme*", ATTR{queue/rotational}="0"
+# Spinning hard drive -> BFQ (keeps the desktop responsive during heavy disk use)
+#                        + bigger read-ahead for faster app launches.
+ACTION=="add|change", KERNEL=="sd[a-z]|vd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq", ATTR{queue/read_ahead_kb}="2048", ATTR{queue/iosched/low_latency}="1"
+# SATA/USB SSD -> mq-deadline ; NVMe -> none (no scheduler overhead)
+ACTION=="add|change", KERNEL=="sd[a-z]|vd[a-z]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline", ATTR{queue/read_ahead_kb}="256"
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="none"

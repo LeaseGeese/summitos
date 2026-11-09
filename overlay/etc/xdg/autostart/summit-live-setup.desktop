@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Summit Live Setup
+Exec=/usr/local/bin/summit-live-setup
+OnlyShowIn=XFCE;
+NoDisplay=true
+X-XFCE-Autostart-Override=true

@@ -1,0 +1,423 @@
+#!/usr/bin/python3
+"""summit-shell: Spotlight, Launchpad and Control Center in one small background process,
+so they open instantly. Controlled with `summit-shell-ctl spotlight|launchpad|control-center`."""
+import os, sys, re, ast, operator, threading, time, subprocess, importlib.machinery, importlib.util
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gtk, Gdk, Gio, GLib, Pango, GdkPixbuf
+
+HOME = os.path.expanduser("~")
+APP_ID = "org.summitos.Shell"
+CSS_PATH = os.path.join(HOME, ".config", "gtk-3.0", "summit.css")
+LAUNCHPAD_CATS = {"Network", "WebBrowser", "Office", "Graphics", "AudioVideo", "Audio", "Video", "Utility", "Development",
+                  "Game", "Education", "System", "FileManager", "TerminalEmulator", "TextEditor", "Calculator"}
+HIDE_IDS = {"x11vnc.desktop", "summit-control-center.desktop", "summit-spotlight.desktop", "summit-launchpad.desktop",
+            "barrier.desktop"}
+# Technical or duplicate entries Spotlight never shows (Summit Settings covers them)
+SPOTLIGHT_HIDE = {"xfce4-settings-editor.desktop", "xfce-settings-manager.desktop", "org.xfce.PanelProfiles.desktop",
+    "panel-preferences.desktop", "xfce-wmtweaks-settings.desktop", "xfce-workspaces-settings.desktop", "xfce-wm-settings.desktop",
+    "xfce4-clipman-settings.desktop", "xfce4-clipman.desktop", "xfce4-color-settings.desktop", "org.xfce.mousepad-settings.desktop",
+    "thunar-settings.desktop", "xfce4-terminal-settings.desktop", "xfce-session-settings.desktop", "blueman-adapters.desktop",
+    "xfce4-file-manager.desktop", "xfce-ui-settings.desktop", "xfce-backdrop-settings.desktop", "nm-connection-editor.desktop",
+    "thunar-bulk-rename.desktop", "xfce4-web-browser.desktop", "xfce4-mail-reader.desktop", "xfce4-terminal-emulator.desktop",
+    "summit-connect.desktop", "rofi.desktop", "rofi-theme-selector.desktop"}
+def is_system_setting(a):
+    cats = set((a.get_categories() or "").split(";"))
+    return bool(cats & {"X-XFCE-SettingsDialog", "DesktopSettings", "HardwareSettings"}) and a.get_id() != "summit-settings.desktop"
+SETTINGS_PAGES = [("Appearance", "Dark mode, accent colour, wallpaper, glass, text size, dock", "appearance", "preferences-desktop-theme"),
+                  ("Storage", "Drives, free space, set up iMac HD", "storage", "drive-harddisk"),
+                  ("Sharing", "File Sharing, Screen Sharing, AirPlay, Time Machine, SSH", "sharing", "folder-remote"),
+                  ("Software Update", "Updates, live testing, roll back, version", "update", "summit-update"),
+                  ("About This iMac", "Model, chip, memory, startup disk", "about", "summitos")]
+# System panels that are hidden from Launchpad but still worth finding by name
+SYSTEM_PANELS = [("Displays", "Resolution, arrangement, scaling", ["xfce4-display-settings"], "preferences-desktop-display"),
+                 ("Keyboard", "Shortcuts, layout, key repeat", ["xfce4-keyboard-settings"], "preferences-desktop-keyboard"),
+                 ("Mouse & Trackpad", "Pointer speed, scrolling, clicking", ["xfce4-mouse-settings"], "preferences-desktop-peripherals"),
+                 ("Network", "Wi-Fi, Ethernet, VPN connections", ["nm-connection-editor"], "preferences-system-network"),
+                 ("Power & Screen Saver", "Sleep, display off, power button", ["xfce4-power-manager-settings"], "preferences-system-power"),
+                 ("Notifications", "Banners, position, Do Not Disturb", ["xfce4-notifyd-config"], "preferences-system-notifications"),
+                 ("Startup Apps", "Apps that open when you log in", ["xfce4-session-settings"], "preferences-system-session"),
+                 ("Default Apps", "Web browser, mail, file manager", ["xfce4-mime-settings"], "preferences-desktop-default-applications")]
+
+# ------------------------------------------------------------------ helpers
+def apps():
+    out = []
+    for a in Gio.AppInfo.get_all():
+        if not a.should_show() or not isinstance(a, Gio.DesktopAppInfo): continue
+        if a.get_id() in HIDE_IDS: continue
+        out.append(a)
+    out.sort(key=lambda a: a.get_name().lower())
+    return out
+
+def launch(app):
+    ctx = Gdk.Display.get_default().get_app_launch_context()
+    try: app.launch([], ctx)
+    except GLib.Error: pass
+
+def score(query, text):
+    q = query.lower(); t = text.lower()
+    if t.startswith(q): return 100 - len(t) * 0.1
+    if any(w.startswith(q) for w in re.split(r"[\s\-_.]+", t)): return 80 - len(t) * 0.1
+    if q in t: return 60 - t.index(q) * 0.5
+    # loose subsequence match
+    i = 0
+    for ch in t:
+        if i < len(q) and ch == q[i]: i += 1
+    return 20 if i == len(q) and len(q) > 3 else 0
+
+def word_score(query, text):
+    """Strict match for hidden keywords and descriptions: only the start of a word counts."""
+    v = score(query, text)
+    return v if v >= 79 else 0
+
+OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+       ast.Pow: operator.pow, ast.Mod: operator.mod, ast.USub: operator.neg, ast.UAdd: operator.pos}
+def calc(expr):
+    expr = expr.replace("×", "*").replace("÷", "/").replace("^", "**").replace(",", "")
+    if not re.fullmatch(r"[\d\s.+\-*/()%]+", expr) or not re.search(r"\d\s*[-+*/%]", expr): return None
+    def ev(n):
+        if isinstance(n, ast.Expression): return ev(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)): return n.value
+        if isinstance(n, ast.BinOp) and type(n.op) in OPS:
+            l, r = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Pow) and abs(r) > 64: raise ValueError
+            return OPS[type(n.op)](l, r)
+        if isinstance(n, ast.UnaryOp) and type(n.op) in OPS: return OPS[type(n.op)](ev(n.operand))
+        raise ValueError
+    try:
+        v = ev(ast.parse(expr, mode="eval"))
+        return f"{v:,.10g}" if isinstance(v, float) else f"{v:,}"
+    except Exception:
+        return None
+
+class FileIndex:
+    """Small, lazy index of file and folder names in your home folder (and iMac HD)."""
+    def __init__(self):
+        self.items = []; self.built = 0
+    def refresh(self):
+        if time.time() - self.built < 600: return
+        self.built = time.time()
+        threading.Thread(target=self._build, daemon=True).start()
+    def _build(self):
+        # Runs `find` at the lowest CPU and disk priority, so indexing never slows apps
+        # down or keeps the hard drive busy. Hidden folders and bulky caches are skipped.
+        roots = [HOME] + (["/mnt/imac-hd"] if os.path.ismount("/mnt/imac-hd") else [])
+        cmd = ["nice", "-n", "19", "ionice", "-c", "3", "find"] + roots + [
+            "-xdev", "-maxdepth", "6",
+            "(", "-name", ".*", "-o", "-name", "node_modules", "-o", "-name", "__pycache__", "-o", "-name", "TimeMachine", "-o", "-name", "snap", ")",
+            "-prune", "-o", "-print"]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=120).stdout.splitlines()
+        except Exception:
+            out = []
+        self.items = [p for p in out[:40000] if p not in roots]
+
+def icon_for_path(p):
+    try:
+        info = Gio.File.new_for_path(p).query_info("standard::icon", Gio.FileQueryInfoFlags.NONE, None)
+        return info.get_icon()
+    except GLib.Error:
+        return Gio.ThemedIcon.new("text-x-generic")
+
+def glassify(win, wmclass):
+    win.set_wmclass(wmclass, wmclass.capitalize())
+    scr = win.get_screen(); vis = scr.get_rgba_visual()
+    if vis: win.set_visual(vis)
+    win.set_app_paintable(True)
+    def draw(w, cr):
+        cr.set_operator(0); cr.paint(); cr.set_operator(2); return False
+    win.connect("draw", draw)
+
+# ------------------------------------------------------------------ Spotlight
+class Spotlight(Gtk.Window):
+    def __init__(self, shell):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL, title="Spotlight")
+        self.shell = shell
+        glassify(self, "summit-shell")
+        self.set_decorated(False); self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_keep_above(True); self.set_type_hint(Gdk.WindowTypeHint.DIALOG); self.set_resizable(False)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); card.get_style_context().add_class("summit-spotlight-card")
+        row = Gtk.Box(spacing=12, margin=14)
+        icon = Gtk.Image.new_from_icon_name("system-search-symbolic", Gtk.IconSize.LARGE_TOOLBAR); icon.set_pixel_size(24)
+        self.entry = Gtk.Entry(placeholder_text="Search apps, files and settings", has_frame=False, hexpand=True)
+        self.entry.get_style_context().add_class("summit-spotlight-entry")
+        row.pack_start(icon, False, False, 0); row.pack_start(self.entry, True, True, 0)
+        card.pack_start(row, False, False, 0)
+        self.sep = Gtk.Separator(); card.pack_start(self.sep, False, False, 0)
+        self.list = Gtk.ListBox(); self.list.get_style_context().add_class("summit-results")
+        self.list.set_activate_on_single_click(True); self.list.connect("row-activated", self.on_activate)
+        self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True, max_content_height=460)
+        self.scroll.add(self.list); card.pack_start(self.scroll, True, True, 0)
+        self.add(card); self.set_size_request(680, -1)
+        self.entry.connect("changed", lambda *_: self.update())
+        self.entry.connect("activate", lambda *_: self.open_selected())
+        self.connect("key-press-event", self.on_key)
+        self.connect("focus-out-event", lambda *_: GLib.timeout_add(100, self.hide_if_unfocused))
+        self.files = FileIndex()
+
+    def hide_if_unfocused(self):
+        if not self.is_active(): self.hide()
+        return False
+
+    def toggle(self):
+        if self.get_visible(): self.hide(); return
+        self.entry.set_text(""); self.update(); self.files.refresh()
+        disp = Gdk.Display.get_default(); mon = disp.get_primary_monitor() or disp.get_monitor(0); g = mon.get_geometry()
+        self.show_all(); self.sep.set_visible(False); self.scroll.set_visible(False)
+        self.resize(680, 1); self.move(g.x + (g.width - 680) // 2, g.y + int(g.height * 0.20))
+        self.present_with_time(Gtk.get_current_event_time() or Gdk.CURRENT_TIME); self.entry.grab_focus()
+
+    def result_row(self, gicon, title, subtitle, action):
+        r = Gtk.ListBoxRow(); r.action = action
+        b = Gtk.Box(spacing=12, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
+        img = Gtk.Image.new_from_gicon(gicon, Gtk.IconSize.DND); img.set_pixel_size(32)
+        t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        l1 = Gtk.Label(label=title, xalign=0); l1.set_ellipsize(Pango.EllipsizeMode.END)
+        l1.get_style_context().add_class("summit-result-title")
+        t.pack_start(l1, False, False, 0)
+        if subtitle:
+            l2 = Gtk.Label(label=subtitle, xalign=0); l2.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            l2.get_style_context().add_class("summit-result-sub"); t.pack_start(l2, False, False, 0)
+        b.pack_start(img, False, False, 0); b.pack_start(t, True, True, 0); r.add(b); return r
+
+    def update(self):
+        for c in self.list.get_children(): self.list.remove(c)
+        q = self.entry.get_text().strip()
+        if not q:
+            self.sep.set_visible(False); self.scroll.set_visible(False); self.resize(680, 1); return
+        rows = []
+        v = calc(q)
+        if v is not None:
+            rows.append((1000, self.result_row(Gio.ThemedIcon.new("accessories-calculator"), f"= {v}", "Press Return to copy", ("copy", v))))
+        for a in self.shell.app_list:
+            if a.get_id() in SPOTLIGHT_HIDE: continue
+            s = max(score(q, a.get_name()), word_score(q, a.get_generic_name() or "") * 0.6,
+                    max([word_score(q, k) * 0.5 for k in (a.get_keywords() or [])] or [0]))
+            if s <= 0: continue
+            setting = is_system_setting(a)
+            sub = "System Settings" if setting else (a.get_generic_name() or "Application")
+            rows.append(((s * 0.8) if setting else (s + 5), self.result_row(a.get_icon() or Gio.ThemedIcon.new("application-x-executable"),
+                                                         a.get_name(), sub, ("app", a))))
+        for name, desc, page, icon in SETTINGS_PAGES:
+            s = max(score(q, name), max(score(q, w) * 0.5 for w in desc.replace(",", "").split()))
+            if s > 0: rows.append((s - 5, self.result_row(Gio.ThemedIcon.new(icon), name, "Settings — " + desc, ("settings", page))))
+        for name, desc, cmd, icon in SYSTEM_PANELS:
+            s = max(score(q, name), max(score(q, w) * 0.4 for w in desc.replace(",", "").split()))
+            if s > 0: rows.append((s - 8, self.result_row(Gio.ThemedIcon.new(icon), name, "Settings — " + desc, ("cmd", cmd))))
+        if len(q) >= 2:
+            hits = [(score(q, os.path.basename(p)), p) for p in self.files.items if q.lower() in os.path.basename(p).lower()]
+            hits.sort(key=lambda h: (-h[0], len(h[1])))
+            for s, p in hits[:6]:
+                rows.append((s - 15, self.result_row(icon_for_path(p), os.path.basename(p), p.replace(HOME, "~", 1), ("file", p))))
+        rows.sort(key=lambda r: -r[0])
+        for _, r in rows[:8]: self.list.add(r)
+        has = bool(rows)
+        self.sep.set_visible(has); self.scroll.set_visible(has); self.list.show_all()
+        if has: self.list.select_row(self.list.get_row_at_index(0))
+        self.resize(680, 1)
+
+    def on_key(self, w, e):
+        if e.keyval == Gdk.KEY_Escape: self.hide(); return True
+        if e.keyval in (Gdk.KEY_Down, Gdk.KEY_Up):
+            r = self.list.get_selected_row(); i = r.get_index() if r else -1
+            i = min(i + 1, len(self.list.get_children()) - 1) if e.keyval == Gdk.KEY_Down else max(i - 1, 0)
+            nr = self.list.get_row_at_index(i)
+            if nr: self.list.select_row(nr)
+            return True
+        return False
+
+    def open_selected(self):
+        r = self.list.get_selected_row()
+        if r: self.on_activate(self.list, r)
+
+    def on_activate(self, _lb, row):
+        kind, val = row.action
+        self.hide()
+        if kind == "app": launch(val)
+        elif kind == "settings": subprocess.Popen(["summit-settings", "--page", val], start_new_session=True)
+        elif kind == "cmd": subprocess.Popen(val, start_new_session=True)
+        elif kind == "file": Gio.AppInfo.launch_default_for_uri(Gio.File.new_for_path(val).get_uri(), None)
+        elif kind == "copy":
+            cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD); cb.set_text(val.replace(",", ""), -1); cb.store()
+
+# ------------------------------------------------------------------ Launchpad
+class Launchpad(Gtk.Window):
+    def __init__(self, shell):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL, title="Launchpad")
+        self.shell = shell
+        glassify(self, "summit-shell")
+        self.set_decorated(False); self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True); self.set_keep_above(True)
+        self.get_style_context().add_class("summit-launchpad")
+        self._bg = None; self._bg_key = None
+        self.connect("draw", self.paint_backdrop)   # runs after glassify's clear, before the children
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=34)
+        self.entry = Gtk.SearchEntry(placeholder_text="Search", halign=Gtk.Align.CENTER, width_chars=26)
+        self.entry.get_style_context().add_class("summit-launchpad-search")
+        self.entry.set_margin_top(48)
+        outer.pack_start(self.entry, False, False, 0)
+        self.flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.SINGLE, homogeneous=True, max_children_per_line=7,
+                                min_children_per_line=7, column_spacing=18, row_spacing=22, activate_on_single_click=True,
+                                valign=Gtk.Align.START)
+        self.flow.set_filter_func(self.filter)
+        self.flow.connect("child-activated", self.on_child)
+        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER); sc.add(self.flow)
+        sc.set_margin_start(150); sc.set_margin_end(150); sc.set_margin_bottom(40)
+        outer.pack_start(sc, True, True, 0)
+        ev = Gtk.EventBox(); ev.add(outer); self.add(ev)
+        ev.connect("button-press-event", self.on_bg_click)
+        self.entry.connect("search-changed", lambda *_: (self.flow.invalidate_filter(), self.select_first()))
+        self.entry.connect("activate", lambda *_: self.launch_selected())
+        self.connect("key-press-event", self.on_key)
+        self.connect("focus-out-event", lambda *_: GLib.timeout_add(100, self.hide_if_unfocused))
+        self.populate()
+
+    def hide_if_unfocused(self):
+        if not self.is_active(): self.hide()
+        return False
+
+    def backdrop(self, w, h):
+        """Your wallpaper, softly blurred (works on any graphics, no compositor blur needed)."""
+        try: path = open(os.path.join(HOME, ".config", "summit", "current-wallpaper")).read().strip()
+        except OSError: path = ""
+        key = (path, w, h, os.path.getmtime(path) if path and os.path.exists(path) else 0)
+        if key != self._bg_key:
+            self._bg_key = key; self._bg = None
+            pre = os.path.join(os.path.dirname(path), "blur", os.path.basename(path))
+            try:
+                if os.path.exists(pre):     # built-in wallpapers ship with a smooth pre-blurred copy
+                    self._bg = GdkPixbuf.Pixbuf.new_from_file_at_scale(pre, w, h, False)
+                else:                       # your own picture: quick blur by shrinking and enlarging
+                    pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, max(1, w // 16), max(1, h // 16), False)
+                    pb = pb.scale_simple(max(1, w // 4), max(1, h // 4), GdkPixbuf.InterpType.BILINEAR)
+                    self._bg = pb.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
+            except Exception:
+                self._bg = None
+        return self._bg
+
+    def paint_backdrop(self, w, cr):
+        a = w.get_allocation(); pb = self.backdrop(a.width, a.height)
+        if pb is not None:
+            Gdk.cairo_set_source_pixbuf(cr, pb, 0, 0); cr.paint()
+            cr.set_source_rgba(0.04, 0.04, 0.10, 0.34); cr.paint()
+        else:
+            cr.set_source_rgba(0.06, 0.06, 0.12, 0.88); cr.paint()
+        return False
+
+    def populate(self):
+        for c in self.flow.get_children(): self.flow.remove(c)
+        for a in self.shell.app_list:
+            cats = set((a.get_categories() or "").split(";"))
+            if not (cats & LAUNCHPAD_CATS): continue
+            child = Gtk.FlowBoxChild(); child.app = a; child.get_style_context().add_class("summit-lp-tile")
+            v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=8)
+            img = Gtk.Image.new_from_gicon(a.get_icon() or Gio.ThemedIcon.new("application-x-executable"), Gtk.IconSize.DIALOG)
+            img.set_pixel_size(80)
+            l = Gtk.Label(label=a.get_name(), justify=Gtk.Justification.CENTER, max_width_chars=16, wrap=True, lines=2)
+            l.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR); l.set_ellipsize(Pango.EllipsizeMode.END)
+            l.get_style_context().add_class("summit-lp-label")
+            v.pack_start(img, False, False, 0); v.pack_start(l, False, False, 0)
+            child.add(v); self.flow.add(child)
+        self.flow.show_all()
+
+    def filter(self, child):
+        q = self.entry.get_text().strip()
+        return not q or score(q, child.app.get_display_name()) > 0
+
+    def select_first(self):
+        for c in self.flow.get_children():
+            if c.get_child_visible() and self.filter(c): self.flow.select_child(c); return
+
+    def toggle(self):
+        if self.get_visible(): self.hide(); return
+        self.entry.set_text("")
+        disp = Gdk.Display.get_default(); mon = disp.get_primary_monitor() or disp.get_monitor(0); g = mon.get_geometry()
+        self.move(g.x, g.y); self.resize(g.width, g.height)
+        self.fullscreen(); self.show_all(); self.fullscreen()
+        self.present_with_time(Gtk.get_current_event_time() or Gdk.CURRENT_TIME); self.entry.grab_focus()
+
+    def on_child(self, _f, child): self.hide(); launch(child.app)
+    def launch_selected(self):
+        sel = self.flow.get_selected_children()
+        if sel: self.on_child(self.flow, sel[0])
+    def on_bg_click(self, w, e):
+        # clicking the empty background closes Launchpad, like on a Mac
+        if e.button == 1: self.hide()
+        return False
+    def on_key(self, w, e):
+        if e.keyval == Gdk.KEY_Escape: self.hide(); return True
+        if e.keyval in (Gdk.KEY_Down, Gdk.KEY_Up, Gdk.KEY_Left, Gdk.KEY_Right) and self.entry.has_focus():
+            sel = self.flow.get_selected_children()
+            if sel: sel[0].grab_focus()
+        return False
+
+# ------------------------------------------------------------------ the shell
+class Shell(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.css = None; self.app_list = []; self.cc_mod = None; self.cc_win = None
+        for name in ("spotlight", "launchpad", "control-center", "reload"):
+            act = Gio.SimpleAction.new(name, None); act.connect("activate", self.on_action, name); self.add_action(act)
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        self.hold()
+        self.load_css()
+        mon = Gio.File.new_for_path(CSS_PATH).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        mon.connect("changed", lambda *_: GLib.timeout_add(300, self.load_css)); self._css_mon = mon
+        self.app_list = apps()
+        self.appmon = Gio.AppInfoMonitor.get(); self.appmon.connect("changed", lambda *_: self.reload_apps())
+        self.spot = Spotlight(self); self.spot.set_application(self)
+        self._pad = None          # Launchpad is built the first time it's opened
+
+    def load_css(self):
+        scr = Gdk.Screen.get_default()
+        if self.css: Gtk.StyleContext.remove_provider_for_screen(scr, self.css)
+        self.css = Gtk.CssProvider()
+        try: self.css.load_from_path(CSS_PATH)
+        except GLib.Error: pass
+        Gtk.StyleContext.add_provider_for_screen(scr, self.css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+        return False
+
+    @property
+    def pad(self):
+        if self._pad is None:
+            self._pad = Launchpad(self); self._pad.set_application(self)
+        return self._pad
+
+    def reload_apps(self):
+        self.app_list = apps()
+        if self._pad is not None: self._pad.populate()
+
+    def do_command_line(self, cl):
+        args = cl.get_arguments()[1:]
+        for a in args:
+            if a in ("--spotlight", "spotlight"): self.on_action(None, None, "spotlight")
+            elif a in ("--launchpad", "launchpad"): self.on_action(None, None, "launchpad")
+            elif a in ("--control-center", "control-center"): self.on_action(None, None, "control-center")
+        return 0
+
+    def on_action(self, _a, _p, name):
+        if name == "spotlight":
+            if self._pad is not None: self._pad.hide()
+            self.spot.toggle()
+        elif name == "launchpad":
+            self.spot.hide(); self.pad.toggle()
+        elif name == "control-center":
+            if self.cc_win and self.cc_win.get_visible():
+                self.cc_win.destroy(); self.cc_win = None; return
+            if not self.cc_mod:
+                loader = importlib.machinery.SourceFileLoader("summit_cc", "/usr/local/bin/summit-control-center")
+                spec = importlib.util.spec_from_loader("summit_cc", loader)
+                self.cc_mod = importlib.util.module_from_spec(spec); loader.exec_module(self.cc_mod)
+            w = self.cc_mod.CC(); w.set_application(self); self.cc_win = w
+            w.connect("destroy", lambda *_: setattr(self, "cc_win", None))
+            w.show_all()
+            disp = Gdk.Display.get_default(); mon = disp.get_primary_monitor() or disp.get_monitor(0)
+            g = mon.get_workarea(); ww, _ = w.get_size(); w.move(g.x + g.width - ww - 10, g.y + 6)
+            w.present_with_time(Gtk.get_current_event_time() or Gdk.CURRENT_TIME); w.set_focus(None)
+        elif name == "reload":
+            self.reload_apps(); self.load_css()
+
+if __name__ == "__main__":
+    sys.exit(Shell().run(sys.argv))

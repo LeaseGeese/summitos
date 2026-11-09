@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Night Shift
+Exec=sh -c "[ -f $HOME/.config/summit/nightshift-off ] || exec redshift"
+OnlyShowIn=XFCE;
+NoDisplay=true

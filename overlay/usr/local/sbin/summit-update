@@ -1,0 +1,403 @@
+#!/usr/bin/python3
+"""summit-update: over-the-air updates for Summit OS.
+
+Updates are published to a GitHub repository. Each commit holds:
+    update.json          version, build number, notes, apt packages, restart need
+    overlay/...          files installed onto the system (same layout as /)
+    removed.txt          optional: paths to delete from the system
+    hooks/post-install.sh  optional: runs as root after files are installed
+    hooks/user.sh        optional: runs once per user, inside their desktop session
+
+  summit-update status            show installed version and settings (JSON)
+  summit-update check             look for an update; install it if auto-install is on
+  summit-update check --no-install
+  summit-update install           install the newest update now
+  summit-update rollback          undo the last installed update
+  summit-update set KEY=VALUE     change settings (repo, branch, auto_install, live, interval_minutes)
+  summit-update auto              used by the timer: checks only when it's due
+  summit-update log               show recent activity
+"""
+import fcntl, hashlib, io, json, os, shutil, subprocess, sys, tarfile, tempfile, time, urllib.request, urllib.error
+
+CONF = "/etc/summit/update.json"
+STATE_DIR = "/var/lib/summit-update"
+STATE = f"{STATE_DIR}/state.json"           # installed version (watched by desktop sessions)
+AVAIL = f"{STATE_DIR}/available.json"       # update waiting to be installed (watched too)
+STATUS = f"{STATE_DIR}/status.json"         # last check result, for the Settings page
+SIGNAL = f"{STATE_DIR}/changed"            # rewritten in place (never renamed) so desktop watchers stay attached
+CURRENT = f"{STATE_DIR}/current"            # copy of the installed update's hooks + notes
+BACKUPS = f"{STATE_DIR}/backups"
+LOG = "/var/log/summit-update.log"
+LOCK = "/run/summit-update.lock"
+UA = {"User-Agent": "SummitOS-Updater/1", "Accept": "application/vnd.github+json"}
+ALLOWED = ("etc/", "usr/", "opt/", "var/lib/summitos/")
+NEVER_OVERWRITE = {"etc/summit/update.json"}     # this computer's own update settings
+KEEP_BACKUPS = 5
+DEFAULTS = {"repo": "", "branch": "main", "auto_install": False, "live": False, "interval_minutes": 360,
+            # servers (only changed for testing against a local copy of GitHub)
+            "api": "https://api.github.com", "raw": "https://raw.githubusercontent.com", "codeload": "https://codeload.github.com"}
+
+# ---------------------------------------------------------------- small helpers
+def log(msg):
+    line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
+    print(msg, flush=True)
+    try:
+        with open(LOG, "a") as f: f.write(line + "\n")
+    except OSError: pass
+
+def read_json(p, default=None):
+    try:
+        with open(p) as f: return json.load(f)
+    except (OSError, ValueError): return default if default is not None else {}
+
+def write_json(p, data):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f: json.dump(data, f, indent=2)
+    os.chmod(tmp, 0o644); os.replace(tmp, p)
+
+def conf():
+    c = dict(DEFAULTS); c.update(read_json(CONF)); return c
+
+def state():
+    s = read_json(STATE)
+    if not s:
+        ver = "1.21"
+        try:
+            for l in open("/etc/os-release"):
+                if l.startswith("PRETTY_NAME="): ver = l.split('"')[1].split()[2]
+        except (OSError, IndexError): pass
+        s = {"version": ver, "build": 0, "sha": "", "installed_at": 0}
+    return s
+
+def set_status(**kv):
+    st = read_json(STATUS); st.update(kv); write_json(STATUS, st)
+
+def run(*cmd, check=False, env=None):
+    r = subprocess.run(list(cmd), capture_output=True, text=True, env=env)
+    if check and r.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} failed: {(r.stderr or r.stdout).strip()[-400:]}")
+    return r
+
+def fetch(url, timeout=30):
+    req = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(req, timeout=timeout) as r: return r.read()
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 16), b""): h.update(b)
+    return h.hexdigest()
+
+def notify_sessions():
+    """Tell every signed-in desktop that something changed: directly through each user's systemd,
+    plus the signal file their watcher follows (a backup if the direct call doesn't reach them)."""
+    try:
+        with open(SIGNAL, "w") as f: f.write(str(time.time()))
+        os.chmod(SIGNAL, 0o644)
+    except OSError: pass
+    r = run("loginctl", "list-users", "--no-legend")
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].isdigit() and int(parts[0]) >= 1000:
+            run("systemctl", "--user", "-M", f"{parts[1]}@", "daemon-reload")
+            run("systemctl", "--user", "-M", f"{parts[1]}@", "start", "--no-block", "summit-update-session.service")
+
+# ---------------------------------------------------------------- talking to GitHub
+def latest(c):
+    """Returns (sha, update.json) for the newest commit on the update branch."""
+    if not c["repo"]: raise RuntimeError("No update source set. Run: summit-update set repo=OWNER/summitos")
+    sha = None
+    try:      # fresh answer straight from the API (60 checks/hour allowed)
+        sha = json.loads(fetch(f"{c['api']}/repos/{c['repo']}/commits/{c['branch']}"))["sha"]
+    except urllib.error.HTTPError as e:
+        if e.code == 404: raise RuntimeError(f"Update repository {c['repo']} not found (is it public?)")
+        log(f"GitHub API unavailable ({e.code}); using the cached copy")
+    ref = sha or c["branch"]
+    meta = json.loads(fetch(f"{c['raw']}/{c['repo']}/{ref}/update.json"))
+    for k in ("version", "build"):
+        if k not in meta: raise RuntimeError(f"update.json has no '{k}'")
+    return sha, meta
+
+def is_newer(c, st, sha, meta):
+    if int(meta["build"]) > int(st.get("build", 0)): return True
+    # Live testing installs every new commit, even without a version bump
+    return bool(c.get("live") and sha and sha != st.get("sha") and int(meta["build"]) >= int(st.get("build", 0)))
+
+# ---------------------------------------------------------------- install
+def download(c, sha, work):
+    data = fetch(f"{c['codeload']}/{c['repo']}/tar.gz/{sha or c['branch']}", timeout=180)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+        def flt(m, path):
+            # symlinks like "service -> /dev/null" (how a service is switched off) are kept as plain links;
+            # everything else gets Python's strict "data" checks (no absolute paths, no escaping the folder)
+            if m.issym() and m.linkname.startswith("/"): return tarfile.tar_filter(m, path)
+            return tarfile.data_filter(m, path)
+        t.extractall(work, filter=flt)
+    tops = [d for d in os.listdir(work) if os.path.isfile(os.path.join(work, d, "update.json"))]
+    if not tops: raise RuntimeError("Downloaded update has no update.json")
+    return os.path.join(work, tops[0])
+
+def files_in(overlay):
+    out = []
+    for root, dirs, files in os.walk(overlay):
+        for n in files + [d for d in dirs if os.path.islink(os.path.join(root, d))]:
+            rel = os.path.relpath(os.path.join(root, n), overlay)
+            if rel in NEVER_OVERWRITE: continue
+            if rel.startswith(ALLOWED): out.append(rel)
+            else: log(f"skipping {rel} (outside allowed folders)")
+    return sorted(out)
+
+def same(src, dst):
+    if os.path.islink(src) or os.path.islink(dst):
+        return os.path.islink(src) and os.path.islink(dst) and os.readlink(src) == os.readlink(dst)
+    if not os.path.isfile(dst): return False
+    if os.path.getsize(src) != os.path.getsize(dst): return False
+    if (os.stat(src).st_mode & 0o7777) != (os.stat(dst).st_mode & 0o7777): return False
+    return sha256(src) == sha256(dst)
+
+def apt(pkgs_install, pkgs_remove):
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    if pkgs_install:
+        log("installing packages: " + " ".join(pkgs_install))
+        run("apt-get", "update", "-q", env=env)
+        run("apt-get", "install", "-y", "-q", "--no-install-recommends", *pkgs_install, check=True, env=env)
+    if pkgs_remove:
+        log("removing packages: " + " ".join(pkgs_remove))
+        run("apt-get", "purge", "-y", "-q", *pkgs_remove, env=env)
+
+def refresh(changed):
+    """Rebuild the caches that the changed files feed into."""
+    c = lambda prefix: any(p.startswith(prefix) for p in changed)
+    if c("etc/systemd/") or c("usr/lib/systemd/") or c("etc/systemd/user/"): run("systemctl", "daemon-reload")
+    if c("etc/udev/"): run("udevadm", "control", "--reload"); run("udevadm", "trigger", "--action=change", "--subsystem-match=block")
+    if c("etc/dconf/"): run("dconf", "update")
+    if c("etc/sysctl.d/"): run("sysctl", "--system")
+    if c("usr/share/glib-2.0/schemas/"): run("glib-compile-schemas", "/usr/share/glib-2.0/schemas")
+    if c("usr/share/fonts/") or c("usr/local/share/fonts/"): run("fc-cache", "-f")
+    if c("usr/share/applications/") or c("usr/local/share/applications/"):
+        run("update-desktop-database", "-q", "/usr/share/applications")
+    for d in sorted({p.split("/")[3] for p in changed if p.startswith("usr/share/icons/") and p.count("/") > 3}):
+        if os.path.isfile(f"/usr/share/icons/{d}/index.theme"): run("gtk-update-icon-cache", "-q", "-f", f"/usr/share/icons/{d}")
+    if c("usr/share/plymouth/") or c("usr/share/initramfs-tools/") or c("etc/initramfs-tools/"):
+        if not live_session(): run("update-initramfs", "-u", "-k", "all")
+    if c("etc/default/grub") and not live_session(): run("update-grub")
+
+def needs_reboot(changed):
+    return any(p.startswith(x) for p in changed for x in ("usr/share/initramfs-tools/", "etc/initramfs-tools/", "etc/default/grub",
+                                                          "etc/modprobe.d/", "etc/modules-load.d/", "usr/share/plymouth/"))
+
+def live_session():
+    try: return "boot=casper" in open("/proc/cmdline").read()
+    except OSError: return False
+
+def set_os_version(version):
+    for path, key, fmt in (("/etc/os-release", "PRETTY_NAME=", 'PRETTY_NAME="Summit OS {} (Ubuntu 24.04 base)"'),
+                           ("/etc/lsb-release", "DISTRIB_DESCRIPTION=", 'DISTRIB_DESCRIPTION="Summit OS {}"')):
+        try:
+            real = os.path.realpath(path)
+            lines = open(real).read().splitlines()
+            lines = [fmt.format(version) if l.startswith(key) else l for l in lines]
+            open(real, "w").write("\n".join(lines) + "\n")
+        except OSError: pass
+
+def install(c, sha, meta):
+    st = state()
+    label = f"{meta['version']} (build {meta['build']})"
+    log(f"installing Summit OS {label} from {c['repo']}@{(sha or c['branch'])[:8]}")
+    set_status(state="installing", message=f"Installing {meta['version']}…", updated=time.time())
+    work = tempfile.mkdtemp(prefix="summit-update-", dir=STATE_DIR)
+    bdir = os.path.join(BACKUPS, f"{int(time.time())}-{meta['build']}")
+    backup = {"from": st, "to": {"version": meta["version"], "build": int(meta["build"]), "sha": sha or ""},
+              "replaced": [], "added": [], "deleted": []}
+    changed = []
+    try:
+        root = download(c, sha, work)
+        apt_cfg = meta.get("apt", {})
+        apt(apt_cfg.get("install", []), apt_cfg.get("remove", []))
+        overlay = os.path.join(root, "overlay")
+        os.makedirs(os.path.join(bdir, "files"), exist_ok=True)
+        for rel in files_in(overlay) if os.path.isdir(overlay) else []:
+            src, dst = os.path.join(overlay, rel), "/" + rel
+            if same(src, dst): continue
+            if os.path.lexists(dst):
+                keep = os.path.join(bdir, "files", rel); os.makedirs(os.path.dirname(keep), exist_ok=True)
+                if os.path.islink(dst): os.symlink(os.readlink(dst), keep)
+                else: shutil.copy2(dst, keep)
+                backup["replaced"].append(rel)
+            else:
+                backup["added"].append(rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            tmp = dst + ".summit-new"
+            if os.path.lexists(tmp): os.remove(tmp)
+            if os.path.islink(src): os.symlink(os.readlink(src), tmp)
+            else: shutil.copy2(src, tmp)
+            if not os.path.islink(src): os.chown(tmp, 0, 0)
+            os.replace(tmp, dst); changed.append(rel)
+            write_json(os.path.join(bdir, "backup.json"), backup)   # saved as we go, so a crash can be undone
+        rm = os.path.join(root, "removed.txt")
+        if os.path.isfile(rm):
+            for line in open(rm):
+                rel = line.strip().lstrip("/")
+                if not rel or rel.startswith("#") or not rel.startswith(ALLOWED): continue
+                dst = "/" + rel
+                if os.path.isfile(dst) or os.path.islink(dst):
+                    keep = os.path.join(bdir, "files", rel); os.makedirs(os.path.dirname(keep), exist_ok=True)
+                    shutil.move(dst, keep); backup["deleted"].append(rel); changed.append(rel)
+        write_json(os.path.join(bdir, "backup.json"), backup)
+        refresh(changed)
+        hook = os.path.join(root, "hooks", "post-install.sh")
+        if os.path.isfile(hook):
+            env = dict(os.environ, SUMMIT_FROM_BUILD=str(st.get("build", 0)), SUMMIT_TO_BUILD=str(meta["build"]),
+                       SUMMIT_LIVE="1" if live_session() else "0")
+            r = run("bash", hook, env=env)
+            if r.returncode != 0: raise RuntimeError(f"post-install hook failed: {(r.stderr or r.stdout).strip()[-400:]}")
+        # keep this update's user hook and notes for desktop sessions
+        if os.path.isdir(CURRENT): shutil.rmtree(CURRENT)
+        os.makedirs(CURRENT)
+        if os.path.isfile(os.path.join(root, "hooks", "user.sh")): shutil.copy2(os.path.join(root, "hooks", "user.sh"), CURRENT)
+        write_json(os.path.join(CURRENT, "update.json"), meta)
+        set_os_version(meta["version"])
+        reboot = meta.get("restart") == "reboot" or needs_reboot(changed)
+        new = {"version": meta["version"], "build": int(meta["build"]), "sha": sha or "", "installed_at": time.time(),
+               "notes": meta.get("notes", []), "restart": "reboot" if reboot else meta.get("restart", "session"),
+               "changed": len(changed), "changed_files": changed[:2000], "backup": bdir}
+        write_json(STATE, new)
+        if os.path.exists(AVAIL): os.remove(AVAIL)
+        notify_sessions()
+        set_status(state="installed", message=f"Installed {meta['version']}", updated=time.time(), error="")
+        log(f"installed {label}: {len(changed)} files changed" + (", restart needed" if reboot else ""))
+        prune_backups()
+        return True
+    except Exception as e:
+        log(f"install failed: {e}; restoring the previous files")
+        restore(bdir, changed_only=True)
+        shutil.rmtree(bdir, ignore_errors=True)       # a failed attempt is not something to roll back to
+        # don't retry this exact update automatically; a newer one (or Check Now / Install Now) will try again
+        set_status(state="error", message="The update couldn't be installed; nothing was changed.", error=str(e),
+                   failed_sha=sha or "", failed_build=meta["build"], updated=time.time())
+        return False
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+def restore(bdir, changed_only=False):
+    b = read_json(os.path.join(bdir, "backup.json"))
+    if not b: return False
+    for rel in b.get("added", []):
+        p = "/" + rel
+        if os.path.lexists(p): os.remove(p)
+    for rel in b.get("replaced", []) + b.get("deleted", []):
+        src, dst = os.path.join(bdir, "files", rel), "/" + rel
+        if not os.path.lexists(src): continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.lexists(dst): os.remove(dst)
+        if os.path.islink(src): os.symlink(os.readlink(src), dst)
+        else: shutil.copy2(src, dst)
+    refresh(b.get("added", []) + b.get("replaced", []) + b.get("deleted", []))
+    return b
+
+def prune_backups():
+    if not os.path.isdir(BACKUPS): return
+    ds = sorted(os.listdir(BACKUPS))
+    for d in ds[:-KEEP_BACKUPS]: shutil.rmtree(os.path.join(BACKUPS, d), ignore_errors=True)
+
+def rollback():
+    ds = sorted(os.listdir(BACKUPS)) if os.path.isdir(BACKUPS) else []
+    st = state(); bdir = None
+    # use the backup made by the update that's installed now (skip leftovers from failed attempts)
+    for d in reversed(ds):
+        to = read_json(os.path.join(BACKUPS, d, "backup.json")).get("to", {})
+        if int(to.get("build", -1)) == int(st.get("build", -2)) and (not st.get("sha") or to.get("sha") == st.get("sha")):
+            bdir = os.path.join(BACKUPS, d); break
+        shutil.rmtree(os.path.join(BACKUPS, d), ignore_errors=True)
+    if not bdir: log("nothing to roll back"); return False
+    b = restore(bdir)
+    if not b: log("backup is unreadable"); return False
+    prev = b["from"]; prev.update(installed_at=time.time(), notes=[f"Rolled back from {b['to']['version']}"], restart="session",
+                                  rolled_back_from=b["to"],
+                                  changed_files=(b.get("added", []) + b.get("replaced", []) + b.get("deleted", []))[:2000])
+    set_os_version(prev.get("version", "1.21"))
+    write_json(STATE, prev)
+    shutil.rmtree(bdir, ignore_errors=True)
+    notify_sessions()
+    # live testing would just reinstall the same commit, so pause it until something newer is published
+    c = conf()
+    if c.get("live"): c["skip_sha"] = b["to"].get("sha", ""); write_json(CONF, c)
+    log(f"rolled back to {prev.get('version')} (build {prev.get('build')})")
+    set_status(state="idle", message=f"Rolled back to {prev.get('version')}", updated=time.time())
+    return True
+
+# ---------------------------------------------------------------- commands
+def check(c, allow_install=True, allow_install_retry=False):
+    set_status(state="checking", message="Checking for updates…", updated=time.time())
+    try:
+        sha, meta = latest(c)
+    except Exception as e:
+        log(f"check failed: {e}")
+        set_status(state="error", message="Couldn't reach the update server.", error=str(e), last_check=time.time(), updated=time.time())
+        return 2
+    st = state()
+    set_status(last_check=time.time(), latest=meta.get("version"), latest_build=meta.get("build"), latest_sha=sha or "")
+    stt = read_json(STATUS)
+    if not allow_install_retry and sha and sha == stt.get("failed_sha"):
+        set_status(state="error", updated=time.time()); return 1
+    if sha and sha == c.get("skip_sha"):
+        set_status(state="idle", message="Up to date (rolled back)", updated=time.time()); return 0
+    if not is_newer(c, st, sha, meta):
+        if os.path.exists(AVAIL): os.remove(AVAIL)
+        set_status(state="idle", message="Summit OS is up to date", error="", updated=time.time()); return 0
+    if allow_install and (c.get("auto_install") or c.get("live")):
+        return 0 if install(c, sha, meta) else 1
+    old = read_json(AVAIL)
+    write_json(AVAIL, {"version": meta["version"], "build": meta["build"], "sha": sha or "", "notes": meta.get("notes", [])})
+    if old.get("sha") != (sha or "") or old.get("build") != meta["build"]: notify_sessions()
+    set_status(state="available", message=f"Summit OS {meta['version']} is available", updated=time.time())
+    log(f"update available: {meta['version']} (build {meta['build']})")
+    return 0
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "status"
+    if cmd in ("status", "log"):
+        if cmd == "log":
+            try: print("".join(open(LOG).readlines()[-40:]), end="")
+            except OSError: print("No activity yet.")
+            return 0
+        print(json.dumps({"installed": state(), "settings": conf(), "status": read_json(STATUS), "available": read_json(AVAIL)}, indent=2, ensure_ascii=False))
+        return 0
+    if os.geteuid() != 0:
+        print("Run with sudo, or use Settings → Software Update.", file=sys.stderr); return 1
+    os.makedirs(STATE_DIR, exist_ok=True)
+    lockf = open(LOCK, "w")
+    try: fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError: print("Another update is already running.", file=sys.stderr); return 3
+    c = conf()
+    if cmd == "set":
+        for kv in argv[2:]:
+            k, _, v = kv.partition("=")
+            if k not in DEFAULTS: print(f"unknown setting {k}", file=sys.stderr); return 64
+            if k in ("api", "raw", "codeload") and not v.startswith(("https://", "http://10.", "http://192.168.", "http://127.")):
+                print(f"{k} must be an https:// address", file=sys.stderr); return 64
+            if isinstance(DEFAULTS[k], bool): v = v.lower() in ("1", "true", "yes", "on")
+            elif isinstance(DEFAULTS[k], int): v = max(1, int(v))
+            c[k] = v
+        c.pop("skip_sha", None) if any(kv.startswith("live=") for kv in argv[2:]) else None
+        write_json(CONF, c); print(json.dumps(c, indent=2)); return 0
+    if cmd == "auto":
+        interval = 2 if c.get("live") else int(c.get("interval_minutes", 360))
+        last = read_json(STATUS).get("last_check", 0)
+        if time.time() - last < interval * 60 - 20: return 0
+        return check(c)
+    if cmd == "check":
+        return check(c, allow_install="--no-install" not in argv, allow_install_retry=True)
+    if cmd == "install":
+        try: sha, meta = latest(c)
+        except Exception as e: log(f"check failed: {e}"); return 2
+        if not is_newer(c, state(), sha, meta) and "--force" not in argv:
+            print("Already up to date."); return 0
+        return 0 if install(c, sha, meta) else 1
+    if cmd == "rollback":
+        return 0 if rollback() else 1
+    print(__doc__); return 64
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+<defs>
+ <linearGradient id="body" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#B9C0CB"/><stop offset=".22" stop-color="#EEF1F5"/><stop offset=".55" stop-color="#D3D8E0"/><stop offset="1" stop-color="#9AA2AE"/></linearGradient>
+ <linearGradient id="inner" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5B6270"/><stop offset="1" stop-color="#8A93A1"/></linearGradient>
+ <filter id="drop" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.2"/></filter>
+</defs>
+<ellipse cx="64" cy="112" rx="34" ry="6" fill="#000" opacity=".22" filter="url(#drop)"/>
+<path d="M28 40l8 66a6 6 0 0 0 6 5h44a6 6 0 0 0 6-5l8-66z" fill="url(#body)" opacity=".96"/>
+<ellipse cx="64" cy="40" rx="36" ry="8" fill="url(#inner)"/>
+
+<path d="M44 52l3 50M56 53l1 51M72 53l-1 51M84 52l-3 50" stroke="#fff" stroke-opacity=".75" stroke-width="3" stroke-linecap="round"/>
+<path d="M44 52l3 50M56 53l1 51M72 53l-1 51M84 52l-3 50" stroke="#8D95A3" stroke-opacity=".45" stroke-width="1.2" transform="translate(2 0)"/>
+<ellipse cx="64" cy="40" rx="36" ry="8" fill="none" stroke="#F8FAFC" stroke-width="3"/>
+</svg>

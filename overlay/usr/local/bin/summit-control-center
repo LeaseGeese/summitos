@@ -1,0 +1,209 @@
+#!/usr/bin/python3
+"""Summit Control Center: quick switches that drop down from the menu bar."""
+import os, sys, json, subprocess, threading, glob, re
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk, GLib
+
+HOME = os.path.expanduser("~")
+CFG = os.path.join(HOME, ".config", "summit")
+AUTOSTART = os.path.join(HOME, ".config", "autostart")
+PIDFILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), f"summit-cc-{os.getuid()}.pid")
+ACCENT_HEX = {"blue": "#1A73E8", "purple": "#9C3FD1", "pink": "#E0306F", "orange": "#EF6C00",
+              "yellow": "#F5C400", "green": "#2E9E4F", "silver": "#9AA3AE"}
+
+def sh(*a, timeout=8):
+    try: return subprocess.run(list(a), capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        class R: returncode = 1; stdout = ""; stderr = ""
+        return R()
+def bg(*a): threading.Thread(target=lambda: sh(*a, timeout=60), daemon=True).start()
+
+# ---- state readers
+def wifi():
+    on = sh("nmcli", "-t", "radio", "wifi").stdout.strip() == "enabled"
+    ssid = ""
+    for line in sh("nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi").stdout.splitlines():
+        if line.startswith("yes:"): ssid = line[4:]; break
+    if not ssid:
+        for line in sh("nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "dev").stdout.splitlines():
+            p = line.split(":")
+            if len(p) >= 3 and p[0] == "ethernet" and p[1] == "connected": ssid = "Ethernet"; break
+    return on, ssid
+def bluetooth():
+    out = sh("bluetoothctl", "show").stdout
+    if "Controller" not in out: return None
+    return "Powered: yes" in out
+def appearance():
+    try: return json.loads(sh("summit-appearance", "get").stdout)
+    except ValueError: return {}
+def dnd():
+    return sh("xfconf-query", "-c", "xfce4-notifyd", "-p", "/do-not-disturb").stdout.strip() == "true"
+def nightshift(): return not os.path.exists(os.path.join(CFG, "nightshift-off"))
+def airplay(): return os.path.exists(os.path.join(AUTOSTART, "summit-airplay.desktop"))
+def volume():
+    out = sh("wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@").stdout
+    m = re.search(r"Volume:\s*([\d.]+)", out)
+    return (float(m.group(1)) if m else 0.5), ("MUTED" in out)
+def backlight():
+    devs = glob.glob("/sys/class/backlight/*")
+    if not devs: return None
+    try:
+        cur = int(open(devs[0] + "/brightness").read()); mx = int(open(devs[0] + "/max_brightness").read())
+        return cur / mx if mx else None
+    except (OSError, ValueError): return None
+
+class Tile(Gtk.Button):
+    def __init__(self, icon, title, sub, on, cb, wide=False):
+        super().__init__(relief=Gtk.ReliefStyle.NONE)
+        self.get_style_context().add_class("summit-tile")
+        b = Gtk.Box(spacing=10)
+        self.img = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR); self.img.set_pixel_size(22)
+        bubble = Gtk.Box(); bubble.pack_start(self.img, False, False, 4)
+        b.pack_start(bubble, False, False, 0)
+        t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.title = Gtk.Label(label=title, xalign=0); self.title.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
+        self.sub = Gtk.Label(label=sub, xalign=0); self.sub.get_style_context().add_class("summit-subtle")
+        self.sub.set_ellipsize(3); self.sub.set_max_width_chars(14)
+        t.pack_start(self.title, False, False, 0); t.pack_start(self.sub, False, False, 0)
+        b.pack_start(t, True, True, 0)
+        self.add(b); self.cb = cb; self.set_on(on)
+        self.connect("clicked", lambda *_: self.cb(self))
+    def set_on(self, on, sub=None):
+        self.on = bool(on)
+        ctx = self.get_style_context(); (ctx.add_class if self.on else ctx.remove_class)("on")
+        if sub is not None: self.sub.set_text(sub)
+
+class CC(Gtk.Window):
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL, title="Control Center")
+        self.set_wmclass("summit-control-center", "Summit-control-center")
+        self.set_decorated(False); self.set_skip_taskbar_hint(True); self.set_skip_pager_hint(True)
+        self.set_keep_above(True); self.set_type_hint(Gdk.WindowTypeHint.UTILITY); self.set_resizable(False)
+        scr = self.get_screen(); vis = scr.get_rgba_visual()
+        if vis and scr.is_composited(): self.set_visual(vis)
+        self.set_app_paintable(True)
+        self.connect("draw", self.on_draw)
+        self.connect("focus-out-event", lambda *_: self.close_soon())
+        self.connect("key-press-event", lambda w, e: self.destroy() if e.keyval == Gdk.KEY_Escape else None)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=14)
+        self.add(outer); self.set_size_request(340, -1)
+
+        on, ssid = wifi()
+        bt = bluetooth(); ap = appearance(); dark = ap.get("effective_dark", False)
+        grid = Gtk.Grid(column_spacing=10, row_spacing=10, column_homogeneous=True)
+        self.t_wifi = Tile("network-wireless-symbolic", "Wi-Fi", ssid or ("On" if on else "Off"), on, self.toggle_wifi)
+        self.t_bt = Tile("bluetooth-symbolic", "Bluetooth", "Unavailable" if bt is None else ("On" if bt else "Off"), bool(bt), self.toggle_bt)
+        self.t_dark = Tile("summit-dark-mode-symbolic", "Dark Mode", "Auto" if ap.get("mode") == "auto" else ("On" if dark else "Off"), dark, self.toggle_dark)
+        self.t_night = Tile("daytime-sunset-symbolic", "Night Shift", "Evenings" if nightshift() else "Off", nightshift(), self.toggle_night)
+        self.t_dnd = Tile("notifications-disabled-symbolic", "Focus", "Do Not Disturb" if dnd() else "Off", dnd(), self.toggle_dnd)
+        self.t_air = Tile("summit-airplay-symbolic", "AirPlay", "Receiving" if airplay() else "Off", airplay(), self.toggle_air)
+        for i, t in enumerate((self.t_wifi, self.t_bt, self.t_dark, self.t_night, self.t_dnd, self.t_air)):
+            grid.attach(t, i % 2, i // 2, 1, 1)
+        outer.pack_start(grid, False, False, 0)
+
+        bl = backlight()
+        if bl is not None:
+            outer.pack_start(self.slider("display-brightness-symbolic", "Display", bl, self.set_brightness), False, False, 0)
+        vol, muted = volume()
+        self.vol = self.slider("audio-volume-high-symbolic", "Sound", min(vol, 1.0), self.set_volume, mute_cb=self.toggle_mute, muted=muted)
+        outer.pack_start(self.vol, False, False, 0)
+
+        acc = Gtk.Box(spacing=8); acc.get_style_context().add_class("summit-tile")
+        acc.pack_start(Gtk.Label(label="Accent", xalign=0), True, True, 4)
+        for a, hx in ACCENT_HEX.items():
+            b = Gtk.Button(); b.set_size_request(22, 22); b.set_tooltip_text(a.capitalize())
+            b.get_style_context().add_class("summit-swatch")
+            if ap.get("accent") == a: b.get_style_context().add_class("selected")
+            p = Gtk.CssProvider(); p.load_from_data(f"button {{ background-image:none; background-color:{hx}; min-width:20px; min-height:20px; }}".encode())
+            b.get_style_context().add_provider(p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            b.connect("clicked", lambda _b, a=a: (bg("summit-appearance", "set", f"accent={a}"), self.destroy()))
+            acc.pack_start(b, False, False, 0)
+        outer.pack_start(acc, False, False, 0)
+
+        foot = Gtk.Box(spacing=8)
+        for text, cmd in (("Sharing…", ["summit-settings", "--page", "sharing"]), ("Settings…", ["summit-settings"])):
+            b = Gtk.Button(label=text, relief=Gtk.ReliefStyle.NONE); b.get_style_context().add_class("summit-tile")
+            b.connect("clicked", lambda _b, c=cmd: (subprocess.Popen(c, start_new_session=True), self.destroy()))
+            foot.pack_start(b, True, True, 0)
+        outer.pack_start(foot, False, False, 0)
+        self._closing = None
+
+    def slider(self, icon, name, value, cb, mute_cb=None, muted=False):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4); box.get_style_context().add_class("summit-tile")
+        box.pack_start(Gtk.Label(label=name, xalign=0), False, False, 0)
+        row = Gtk.Box(spacing=8)
+        if mute_cb:
+            ib = Gtk.Button(relief=Gtk.ReliefStyle.NONE)
+            ib.add(Gtk.Image.new_from_icon_name("audio-volume-muted-symbolic" if muted else icon, Gtk.IconSize.MENU))
+            ib.connect("clicked", lambda b: mute_cb(b)); row.pack_start(ib, False, False, 0)
+        else:
+            row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 4)
+        s = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 1, 0.01); s.set_draw_value(False); s.set_value(value)
+        s.get_style_context().add_class("summit"); s.connect("value-changed", lambda sc: cb(sc.get_value()))
+        row.pack_start(s, True, True, 0); box.pack_start(row, False, False, 0)
+        return box
+
+    def on_draw(self, w, cr):
+        # glass card: the compositor blurs what's behind; we paint a soft translucent fill
+        ctx = self.get_style_context(); ctx.add_class("summit-glass")
+        a = w.get_allocation()
+        cr.set_operator(0); cr.paint(); cr.set_operator(2)  # clear, then OVER
+        Gtk.render_background(ctx, cr, 0, 0, a.width, a.height)
+        Gtk.render_frame(ctx, cr, 0, 0, a.width, a.height)
+        return False
+
+    def close_soon(self):
+        if not self._closing: self._closing = GLib.timeout_add(120, lambda: (self.destroy(), False)[1])
+
+    # ---- actions
+    def toggle_wifi(self, t):
+        new = not t.on; t.set_on(new, "On" if new else "Off"); bg("nmcli", "radio", "wifi", "on" if new else "off")
+    def toggle_bt(self, t):
+        if bluetooth() is None: return
+        new = not t.on; t.set_on(new, "On" if new else "Off"); bg("bluetoothctl", "power", "on" if new else "off")
+    def toggle_dark(self, t):
+        new = not t.on; t.set_on(new, "On" if new else "Off"); bg("summit-appearance", "set", f"mode={'dark' if new else 'light'}")
+    def toggle_night(self, t):
+        new = not t.on; t.set_on(new, "Evenings" if new else "Off"); os.makedirs(CFG, exist_ok=True)
+        flag = os.path.join(CFG, "nightshift-off")
+        if new:
+            if os.path.exists(flag): os.remove(flag)
+            subprocess.Popen(["redshift"], start_new_session=True)
+        else:
+            open(flag, "w").close(); bg("pkill", "-x", "redshift"); bg("redshift", "-x")
+    def toggle_dnd(self, t):
+        new = not t.on; t.set_on(new, "Do Not Disturb" if new else "Off")
+        bg("xfconf-query", "-c", "xfce4-notifyd", "-p", "/do-not-disturb", "-n", "-t", "bool", "-s", "true" if new else "false")
+    def toggle_air(self, t):
+        new = not t.on; t.set_on(new, "Receiving" if new else "Off"); p = os.path.join(AUTOSTART, "summit-airplay.desktop")
+        if new:
+            os.makedirs(AUTOSTART, exist_ok=True)
+            open(p, "w").write("[Desktop Entry]\nType=Application\nName=AirPlay Receiver\nExec=summit-connect-agent airplay\nNoDisplay=true\n")
+            subprocess.Popen(["summit-connect-agent", "airplay"], start_new_session=True)
+        else:
+            if os.path.exists(p): os.remove(p)
+            bg("summit-connect-agent", "stop-airplay")
+    def set_volume(self, v): bg("wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{v:.2f}")
+    def toggle_mute(self, b): bg("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle")
+    def set_brightness(self, v): bg("brightnessctl", "-q", "set", f"{max(5, int(v * 100))}%")
+
+def main():
+    # clicking the menu bar icon again closes it
+    try:
+        pid = int(open(PIDFILE).read())
+        os.kill(pid, 0); os.kill(pid, 15); os.remove(PIDFILE); return
+    except (OSError, ValueError):
+        pass
+    open(PIDFILE, "w").write(str(os.getpid()))
+    w = CC()
+    def place():
+        disp = Gdk.Display.get_default(); mon = disp.get_primary_monitor() or disp.get_monitor(0)
+        g = mon.get_workarea(); ww, _ = w.get_size()
+        w.move(g.x + g.width - ww - 10, g.y + 6); return False
+    w.connect("destroy", lambda *_: (os.path.exists(PIDFILE) and os.remove(PIDFILE), Gtk.main_quit()))
+    w.show_all(); place(); w.present(); w.set_focus(None)
+    Gtk.main()
+
+if __name__ == "__main__":
+    main()

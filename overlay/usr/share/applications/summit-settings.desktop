@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Appearance, storage, sharing and more
+Exec=summit-settings
+Icon=summit-settings
+Terminal=false
+Categories=Settings;System;Utility;
+Keywords=appearance;dark;accent;wallpaper;storage;disk;sharing;about;preferences;
+StartupWMClass=summit-settings

@@ -1,0 +1,1 @@
+DPkg::Post-Invoke { "if [ -x /usr/local/sbin/summit-efi-sync ]; then /usr/local/sbin/summit-efi-sync; fi"; };

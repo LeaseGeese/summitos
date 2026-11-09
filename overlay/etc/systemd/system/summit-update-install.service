@@ -1,0 +1,7 @@
+[Unit]
+Description=Install the available Summit OS update
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/summit-update install

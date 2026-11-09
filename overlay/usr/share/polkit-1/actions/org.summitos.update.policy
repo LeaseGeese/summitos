@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Summit OS</vendor>
+  <action id="org.summitos.update">
+    <description>Change Summit OS update settings or roll back an update</description>
+    <message>Summit needs your password to change software update settings.</message>
+    <icon_name>summit-update</icon_name>
+    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/sbin/summit-update</annotate>
+  </action>
+</policyconfig>

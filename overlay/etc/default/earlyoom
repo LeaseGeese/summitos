@@ -1,0 +1,3 @@
+# Summit OS: if RAM + swap are nearly full, close the biggest offender
+# (usually a browser tab) instead of letting the hard drive thrash and freeze.
+EARLYOOM_ARGS="-m 4 -s 10 -r 3600 -n --avoid (^|/)(init|systemd|Xorg|lightdm|xfwm4|xfce4-session|xfce4-panel|plank|sshd|smbd)$ --prefer (^|/)(WebKitWebProces|epiphany|mpv|uxplay)$"

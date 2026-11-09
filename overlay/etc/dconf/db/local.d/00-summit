@@ -1,0 +1,11 @@
+[net/launchpad/plank/docks/dock1]
+theme='Summit-Light'
+icon-size=52
+zoom-enabled=true
+zoom-percent=150
+hide-mode='none'
+position='bottom'
+alignment='center'
+show-dock-item=false
+pressure-reveal=false
+dock-items=['finder.dockitem', 'launchpad.dockitem', 'browser.dockitem', 'terminal.dockitem', 'textedit.dockitem', 'calculator.dockitem', 'monitor.dockitem', 'settings.dockitem', 'trash.dockitem']

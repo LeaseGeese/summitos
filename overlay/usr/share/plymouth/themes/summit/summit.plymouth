@@ -1,0 +1,40 @@
+[Plymouth Theme]
+Name=Summit
+Description=Summit OS boot splash
+ModuleName=two-step
+
+[two-step]
+Font=Inter 12
+TitleFont=Inter Light 24
+ImageDir=/usr/share/plymouth/themes/summit
+DialogHorizontalAlignment=.5
+DialogVerticalAlignment=.62
+TitleHorizontalAlignment=.5
+TitleVerticalAlignment=.38
+HorizontalAlignment=.5
+VerticalAlignment=.70
+WatermarkHorizontalAlignment=.5
+WatermarkVerticalAlignment=.44
+Transition=none
+TransitionDuration=0.0
+BackgroundStartColor=0x0d0b2a
+BackgroundEndColor=0x0d0b2a
+ProgressBarBackgroundColor=0x2a2850
+ProgressBarForegroundColor=0xffffff
+MessageBelowAnimation=true
+
+[boot-up]
+UseEndAnimation=false
+UseFirmwareBackground=false
+[shutdown]
+UseEndAnimation=false
+UseFirmwareBackground=false
+[reboot]
+UseEndAnimation=false
+UseFirmwareBackground=false
+[updates]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Installing updates...
+SubTitle=Do not turn off your computer

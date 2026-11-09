@@ -1,0 +1,77 @@
+#!/usr/bin/python3
+"""Build Summit-<Accent>[-Dark] icon themes: Papirus with folders in the accent colour."""
+import os
+SRC = "/usr/share/icons/Papirus"; DST = "/usr/share/icons"
+COLORS = {"Blue": "blue", "Purple": "violet", "Pink": "pink", "Orange": "orange",
+          "Yellow": "yellow", "Green": "green", "Silver": "grey"}
+OVERRIDES = {}
+for names, icon in (
+    ("org.xfce.thunar Thunar thunar system-file-manager file-manager summit-files", "summit-files"),
+    ("org.gnome.Epiphany web-browser summit-web", "summit-web"),
+    ("org.xfce.terminal utilities-terminal xfce4-terminal summit-terminal", "summit-terminal"),
+    ("org.xfce.mousepad accessories-text-editor mousepad summit-textedit", "summit-textedit"),
+    ("org.gnome.Calculator accessories-calculator gnome-calculator summit-calculator", "summit-calculator"),
+    ("org.xfce.taskmanager utilities-system-monitor xfce4-taskmanager summit-monitor", "summit-monitor"),
+    ("org.gnome.FileRoller file-roller summit-archive", "summit-archive"),
+    ("blueman bluetooth summit-bluetooth", "summit-bluetooth"),
+    ("org.gnome.DiskUtility gnome-disks summit-disks", "summit-disks"),
+    ("atril summit-docviewer", "summit-docviewer"),
+    ("org.xfce.ristretto ristretto summit-photos", "summit-photos"),
+    ("mpv summit-media", "summit-media"),
+    ("gparted summit-partitions", "summit-partitions"),
+    ("org.xfce.screenshooter xfce4-screenshooter summit-screenshot", "summit-screenshot"),
+    ("multimedia-volume-control summit-sound", "summit-sound"),
+    ("summit-settings", "summit-settings"), ("summit-launchpad", "summit-launchpad"), ("summit-connect", "summit-connect"),
+    ("user-trash summit-trash", "summit-trash"), ("user-trash-full summit-trash-full", "summit-trash-full")):
+    for n in names.split(): OVERRIDES[n] = icon
+import re
+sizes = [d for d in os.listdir(SRC) if re.match(r"^\d+x\d+(@2x)?$", d) and os.path.isdir(os.path.join(SRC, d, "places")) and not os.path.islink(os.path.join(SRC, d))]
+def final(path):
+    seen = 0
+    while os.path.islink(path) and seen < 10:
+        path = os.path.join(os.path.dirname(path), os.readlink(path)); seen += 1
+    return os.path.normpath(path)
+for name, col in COLORS.items():
+    for dark in (False, True):
+        theme = f"Summit-{name}" + ("-Dark" if dark else "")
+        root = os.path.join(DST, theme)
+        dirs = []
+        for size in sorted(sizes):
+            pdir = os.path.join(SRC, size, "places"); out = os.path.join(root, size, "places")
+            os.makedirs(out, exist_ok=True)
+            for f in os.listdir(pdir):
+                p = os.path.join(pdir, f)
+                if not os.path.islink(p): continue
+                tgt = final(p); base = os.path.basename(tgt)
+                if "-blue" not in base: continue
+                new = os.path.join(os.path.dirname(tgt), base.replace("-blue", f"-{col}", 1))
+                if col != "blue" and not os.path.exists(new): continue
+                dst = os.path.join(out, f)
+                if os.path.lexists(dst): os.remove(dst)
+                os.symlink(new, dst)
+            dirs.append(f"{size}/places")
+        # Summit's own trash icons (used by the dock and Files)
+        sc = os.path.join(root, "scalable", "places"); os.makedirs(sc, exist_ok=True)
+        for t in ("user-trash", "user-trash-full"):
+            dst = os.path.join(sc, t + ".svg")
+            if os.path.lexists(dst): os.remove(dst)
+            os.symlink(f"/usr/share/summitos/icons/{t}.svg", dst)
+        dirs.append("scalable/places")
+        # Summit app icons under the names apps and windows ask for (dock, Launchpad, Alt-Tab, dialogs)
+        appdir = os.path.join(root, "scalable", "apps"); os.makedirs(appdir, exist_ok=True)
+        for icon_name, summit in OVERRIDES.items():
+            dst = os.path.join(appdir, icon_name + ".svg")
+            if os.path.lexists(dst): os.remove(dst)
+            os.symlink(f"/usr/share/summitos/icons/{summit}.svg", dst)
+        dirs.append("scalable/apps")
+        inherits = "Papirus-Dark,Papirus,hicolor" if dark else "Papirus,hicolor"
+        with open(os.path.join(root, "index.theme"), "w") as fh:
+            fh.write(f"[Icon Theme]\nName={theme}\nComment=Papirus with {name.lower()} folders (Summit OS)\nInherits={inherits}\nHidden=false\nDirectories={','.join(dirs)}\n\n")
+            for d in dirs:
+                if d.startswith("scalable"):
+                    fh.write(f"[{d}]\nContext=Places\nSize=128\nMinSize=16\nMaxSize=512\nType=Scalable\n\n"); continue
+                if d == "scalable/apps":
+                    fh.write("[scalable/apps]\nContext=Applications\nSize=128\nMinSize=8\nMaxSize=512\nType=Scalable\n\n"); continue
+                sz = d.split("/")[0]; scale = 2 if "@2x" in sz else 1; px = int(sz.split("x")[0])
+                fh.write(f"[{d}]\nContext=Places\nSize={px}\n" + (f"Scale={scale}\n" if scale > 1 else "") + "Type=Fixed\n\n")
+print("icon themes built:", len(COLORS) * 2)

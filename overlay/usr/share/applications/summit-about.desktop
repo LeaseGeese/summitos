@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=About This iMac
+Exec=summit-settings --page about
+Icon=summitos
+Terminal=false
+Categories=System;Utility;

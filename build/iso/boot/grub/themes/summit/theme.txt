@@ -1,0 +1,14 @@
+title-text: ""
+desktop-image: "background.png"
+desktop-color: "#0d0b2a"
+terminal-font: "Inter Regular 16"
++ label { top = 390 left = 0 width = 100% align = "center" text = "Summit OS 1.21" font = "Inter Regular 30" color = "#ffffff" }
++ label { top = 436 left = 0 width = 100% align = "center" text = "for iMac" font = "Inter Regular 22" color = "#c9c4e8" }
++ boot_menu {
+    left = 50%-330 top = 520 width = 660 height = 300
+    item_font = "Inter Regular 22" item_color = "#d8d4f0" selected_item_color = "#ffffff"
+    item_height = 40 item_padding = 14 item_spacing = 30 icon_width = 0 icon_height = 0
+    selected_item_pixmap_style = "select_*.png"
+  }
++ label { id = "__timeout__" top = 100%-70 left = 0 width = 100% align = "center" font = "Inter Regular 16" color = "#a9a3cc" text = "Starting in %d seconds" }
++ label { top = 100%-44 left = 0 width = 100% align = "center" font = "Inter Regular 16" color = "#8e88b6" text = "Use ↑ ↓ and Return  ·  Black screen? Choose safe graphics" }

@@ -1,0 +1,50 @@
+#!/usr/bin/python3
+"""Summit OS disk health check: reads SMART data via UDisks (no root needed)
+and warns early if the drive is failing or developing bad sectors."""
+import sys, subprocess, json
+import gi
+from gi.repository import Gio, GLib
+
+def drives():
+    bus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+    om = bus.call_sync("org.freedesktop.UDisks2", "/org/freedesktop/UDisks2",
+                       "org.freedesktop.DBus.ObjectManager", "GetManagedObjects",
+                       None, None, Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+    for path, ifaces in om.items():
+        ata = ifaces.get("org.freedesktop.UDisks2.Drive.Ata")
+        drv = ifaces.get("org.freedesktop.UDisks2.Drive")
+        if not ata or not drv or not ata.get("SmartSupported"):
+            continue
+        yield {
+            "model": drv.get("Model") or "Disk",
+            "size_gb": round(drv.get("Size", 0) / 1e9),
+            "rotational": drv.get("RotationRate", 0) != 0,
+            "failing": bool(ata.get("SmartFailing")),
+            "temp_c": round(ata.get("SmartTemperature", 0) - 273.15) if ata.get("SmartTemperature") else None,
+            "bad_sectors": int(ata.get("SmartNumBadSectors", 0)),
+            "hours": round(ata.get("SmartPowerOnSeconds", 0) / 3600),
+            "updated": ata.get("SmartUpdated", 0),
+        }
+
+def summary(d):
+    if d["failing"]:
+        return "critical", f"{d['model']} reports it is FAILING. Back up your files now."
+    if d["bad_sectors"] > 0:
+        return "warning", f"{d['model']} has {d['bad_sectors']} bad sector(s). Back up soon and consider replacing it."
+    t = f", {d['temp_c']} °C" if d["temp_c"] else ""
+    return "ok", f"{d['model']} is healthy ({d['hours']:,} hours of use{t})."
+
+if __name__ == "__main__":
+    try:
+        found = list(drives())
+    except Exception as e:
+        found = []
+    if "--json" in sys.argv:
+        print(json.dumps([dict(d, status=summary(d)[0], text=summary(d)[1]) for d in found])); sys.exit(0)
+    for d in found:
+        level, text = summary(d)
+        if level != "ok":
+            subprocess.run(["notify-send", "-u", "critical" if level == "critical" else "normal",
+                            "-i", "drive-harddisk", "Disk health warning", text])
+        elif "--verbose" in sys.argv:
+            print(text)

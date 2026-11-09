@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for Summit OS updates
+
+[Path]
+# a small file Summit rewrites in place after every update (renamed files would detach the watch)
+PathChanged=/var/lib/summit-update/changed
+Unit=summit-update-session.service
+
+[Install]
+WantedBy=default.target

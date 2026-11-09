@@ -1,0 +1,377 @@
+#!/usr/bin/python3
+"""summit-appearance: one place that applies Summit OS's look.
+
+  summit-appearance get                 print current settings (JSON)
+  summit-appearance set KEY=VALUE ...   change settings and apply them
+  summit-appearance apply               re-apply everything
+  summit-appearance write-files [HOME]  only write the generated config files
+  summit-appearance auto-check          for Auto mode: re-apply if day/night changed
+  summit-appearance session-start       run once at login
+
+Keys: accent (blue purple pink orange yellow green silver), mode (light dark auto),
+      wallpaper (spectrum, accent, a colour name, or a file path), glass (on reduced off),
+      dock_size (32-80), dock_zoom (true/false), dock_autohide (true/false),
+      text (small default large larger)
+"""
+import json, os, subprocess, sys, datetime, shutil
+
+HOME = os.path.expanduser("~")
+CFG_DIR = os.path.join(HOME, ".config", "summit")
+STATE = os.path.join(CFG_DIR, "appearance.json")
+WALLS = "/usr/share/backgrounds/summitos"
+
+DEFAULTS = {"accent": "blue", "mode": "light", "wallpaper": "spectrum", "glass": "on",
+            "dock_size": 52, "dock_zoom": True, "dock_autohide": False, "text": "default"}
+TEXT = {"small": 9.5, "default": 10.5, "large": 12, "larger": 13.5}
+
+#            Orchis name      Papirus folder  light accent  dark accent   text on accent
+ACCENTS = {
+    "blue":   ("Orchis",        "blue",   "#1A73E8", "#3281EA", "#ffffff"),
+    "purple": ("Orchis-Purple", "violet", "#9C3FD1", "#BA68C8", "#ffffff"),
+    "pink":   ("Orchis-Pink",   "pink",   "#E0306F", "#F06292", "#ffffff"),
+    "orange": ("Orchis-Orange", "orange", "#EF6C00", "#FB8C00", "#ffffff"),
+    "yellow": ("Orchis-Yellow", "yellow", "#F5C400", "#FFD600", "#1d1d1f"),
+    "green":  ("Orchis-Green",  "green",  "#2E9E4F", "#4CAF50", "#ffffff"),
+    "silver": ("Orchis-Grey",   "grey",   "#5E6470", "#C7CCD4", "#ffffff"),
+}
+# silver accent text in dark mode needs dark text
+DARK_ONACCENT = {"silver": "#1d1d1f", "yellow": "#1d1d1f"}
+
+def load():
+    s = dict(DEFAULTS)
+    try:
+        with open(STATE) as f: s.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    if s["accent"] not in ACCENTS: s["accent"] = "blue"
+    if s["mode"] not in ("light", "dark", "auto"): s["mode"] = "light"
+    if s["glass"] not in ("on", "reduced", "off"): s["glass"] = "on"
+    if s.get("text") not in TEXT: s["text"] = "default"
+    return s
+
+def save(s):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f: json.dump(s, f, indent=2)
+    os.replace(tmp, STATE)
+
+def is_dark(s, now=None):
+    if s["mode"] == "auto":
+        now = now or datetime.datetime.now()
+        minutes = now.hour * 60 + now.minute
+        return not (6 * 60 + 30 <= minutes < 19 * 60 + 30)   # light 6:30 AM – 7:30 PM
+    return s["mode"] == "dark"
+
+def wallpaper_path(s, dark):
+    w = s.get("wallpaper") or "spectrum"
+    if os.path.isabs(w) and os.path.exists(w): return w
+    name = s["accent"] if w == "accent" else w
+    p = f"{WALLS}/summit-{name}-{'dark' if dark else 'light'}.jpg"
+    return p if os.path.exists(p) else f"{WALLS}/summit-spectrum-{'dark' if dark else 'light'}.jpg"
+
+# ---------------------------------------------------------------- helpers
+def run(*a):
+    try: return subprocess.run(list(a), capture_output=True, text=True, timeout=10)
+    except Exception: return None
+
+def xf(channel, prop, typ, value):
+    if typ == "bool": value = "true" if value else "false"
+    run("xfconf-query", "-c", channel, "-p", prop, "-n", "-t", typ, "-s", str(value))
+
+def xf_array(channel, prop, typ, values):
+    args = ["xfconf-query", "-c", channel, "-p", prop, "-n", "-a"]
+    for v in values: args += ["-t", typ, "-s", str(v)]
+    run(*args)
+
+def rgba(h, a):
+    h = h.lstrip("#"); return f"rgba({int(h[0:2],16)},{int(h[2:4],16)},{int(h[4:6],16)},{a})"
+
+# ---------------------------------------------------------------- generated files
+NOBLUR = os.path.join(CFG_DIR, "no-gpu-blur")   # written by summit-compositor when blur isn't available
+
+def glass_levels(s, dark):
+    g = s["glass"]
+    if g == "on" and os.path.exists(NOBLUR): g = "reduced"   # without blur, see-through glass hurts readability
+    a = {"on": 0.0, "reduced": 1.0, "off": 2.0}[g]
+    pick = lambda on, red, off: (on, red, off)[int(a)]
+    return {
+        "panel":  pick(0.50, 0.86, 1.0),
+        "pop":    pick(0.86, 0.96, 1.0),      # Control Center, notifications
+        "spot":   pick(0.95, 1.0, 1.0),       # Spotlight: text-heavy, so it stays almost solid
+        "lp":     pick(0.40, 0.80, 0.96),     # Launchpad backdrop
+        "term":   pick(0.86, 0.96, 1.0),
+        "menu":   99,                        # <100 gives the menu window an alpha channel, so its corners can be transparent
+    }
+
+def write_files(s, home=HOME):
+    dark = is_dark(s)
+    acc = ACCENTS[s["accent"]]
+    accent = acc[3] if dark else acc[2]
+    onaccent = DARK_ONACCENT.get(s["accent"], acc[4]) if dark else acc[4]
+    lv = glass_levels(s, dark)
+    cfg = os.path.join(home, ".config", "summit"); os.makedirs(cfg, exist_ok=True)
+
+    # rofi colours (Spotlight + Launchpad)
+    if dark:
+        rasi = dict(glass=f"rgba(34,34,40,{lv['pop']})", fg="#f2f2f7", sub="#8e8e93",
+                    line="rgba(255,255,255,0.08)", rim="rgba(255,255,255,0.16)")
+    else:
+        rasi = dict(glass=f"rgba(248,248,252,{lv['pop']})", fg="#1d1d1f", sub="#8a8a8e",
+                    line="rgba(0,0,0,0.08)", rim="rgba(255,255,255,0.75)")
+    rasi.update(accent=accent, onaccent=onaccent, lpglass=f"rgba(12,12,28,{lv['lp']})")
+    with open(os.path.join(cfg, "theme.rasi"), "w") as f:
+        f.write("/* generated by summit-appearance */\n* { " + " ".join(f"{k}: {v};" for k, v in rasi.items()) + " }\n")
+
+    # GTK glass layer
+    gtkdir = os.path.join(home, ".config", "gtk-3.0"); os.makedirs(gtkdir, exist_ok=True)
+    pop = f"rgba(36,36,42,{lv['pop']})" if dark else f"rgba(250,250,253,{lv['pop']})"
+    spot = f"rgba(32,32,38,{lv['spot']})" if dark else f"rgba(252,252,254,{lv['spot']})"
+    lp = f"rgba(12,12,28,{lv['lp']})"
+    rim = "rgba(255,255,255,0.14)" if dark else "rgba(255,255,255,0.85)"
+    hover = "rgba(255,255,255,0.12)" if dark else "rgba(0,0,0,0.07)"
+    css = f"""/* Summit OS glass layer: generated by summit-appearance, edits are overwritten */
+@define-color summit_accent {accent};
+@define-color summit_onaccent {onaccent};
+@define-color summit_glass {pop};
+@define-color summit_spot {spot};
+@define-color summit_rim {rim};
+
+/* menu bar */
+.xfce4-panel {{ font-family: Inter; font-size: {TEXT[s['text']]}pt; }}
+.xfce4-panel button {{ border-radius: 8px; padding: 0 8px; margin: 2px 1px; border: none; box-shadow: none; }}
+.xfce4-panel button:hover {{ background-color: {hover}; }}
+.xfce4-panel button:checked, .xfce4-panel button:active {{ background-color: alpha(@summit_accent, 0.22); }}
+.xfce4-panel #clock-button label, .xfce4-panel .clock label {{ font-weight: 600; }}
+
+/* Summit menu (whisker) */
+#whiskermenu-window {{ background-color: transparent; border: none; box-shadow: none; }}
+#whiskermenu-window entry {{ border-radius: 10px; min-height: 34px; padding: 0 10px; }}
+#whiskermenu-window treeview, #whiskermenu-window iconview,
+#whiskermenu-window scrolledwindow, #whiskermenu-window viewport {{ background-color: transparent; }}
+#whiskermenu-window treeview:selected, #whiskermenu-window iconview:selected,
+#whiskermenu-window treeview:hover {{ background-color: @summit_accent; color: @summit_onaccent; border-radius: 9px; }}
+#whiskermenu-window button {{ border-radius: 9px; }}
+#whiskermenu-window button:checked {{ background-color: alpha(@summit_accent, 0.18); color: @summit_accent; }}
+
+/* pop-up menus and tooltips */
+menu, .menu, .context-menu {{ border-radius: 12px; padding: 5px 0; }}
+menu menuitem, .menu menuitem {{ border-radius: 7px; padding: 5px 12px; margin: 0 5px; min-height: 22px; }}
+menu menuitem:hover, .menu menuitem:hover {{ background-color: @summit_accent; color: @summit_onaccent; }}
+menu menuitem:hover label, menu menuitem:hover accelerator {{ color: @summit_onaccent; }}
+tooltip, tooltip.background {{ border-radius: 9px; }}
+
+/* desktop labels stay readable on colourful wallpapers */
+XfdesktopIconView.view {{ color: #ffffff; text-shadow: 0 1px 3px rgba(0,0,0,0.75); }}
+XfdesktopIconView.view:active {{ background-color: alpha(@summit_accent, 0.55); border-radius: 8px; }}
+
+/* Summit apps */
+.summit-glass {{ background-color: @summit_glass; border: 1px solid @summit_rim; border-radius: 14px; box-shadow: inset 0 1px alpha(#ffffff, 0.35); }}
+.summit-spotlight-card {{ background-color: @summit_spot; border: 1px solid {('rgba(255,255,255,0.18)' if dark else 'rgba(0,0,0,0.12)')}; border-radius: 16px; box-shadow: inset 0 1px {('rgba(255,255,255,0.10)' if dark else 'rgba(255,255,255,0.9)')}; }}
+.summit-spotlight-card separator {{ background-color: {('rgba(255,255,255,0.10)' if dark else 'rgba(0,0,0,0.08)')}; min-height: 1px; }}
+.summit-result-sub {{ font-size: 9pt; opacity: 0.62; }}
+.summit-results row:selected .summit-result-sub {{ opacity: 0.85; }}
+.summit-spotlight-entry, .summit-spotlight-entry:focus {{ font-size: 19pt; background: none; border: none; box-shadow: none; min-height: 36px; }}
+.summit-results, .summit-results row {{ background-color: transparent; }}
+.summit-results row {{ border-radius: 10px; margin: 2px 8px; }}
+.summit-results row:selected {{ background-color: @summit_accent; }}
+.summit-results row:selected label {{ color: @summit_onaccent; }}
+.summit-result-title {{ font-size: 12pt; }}
+.summit-launchpad-bg {{ background-color: {lp}; }}
+.summit-launchpad-search {{ border-radius: 12px; min-height: 34px; color: #ffffff; background-color: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.32); box-shadow: none; }}
+.summit-launchpad-search image {{ color: rgba(255,255,255,0.8); }}
+flowboxchild.summit-lp-tile {{ border-radius: 22px; padding: 4px; }}
+flowboxchild.summit-lp-tile:hover {{ background-color: rgba(255,255,255,0.10); }}
+flowboxchild.summit-lp-tile:selected {{ background-color: rgba(255,255,255,0.20); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35); }}
+.summit-lp-label {{ color: #ffffff; text-shadow: 0 1px 2px rgba(0,0,0,0.55); }}
+.summit-card {{ border-radius: 14px; border: 1px solid alpha(@theme_fg_color, 0.08); background-color: alpha(@theme_base_color, 0.85); }}
+.summit-tile {{ border-radius: 14px; padding: 10px; background-color: alpha(@theme_fg_color, 0.07); border: 1px solid alpha(@theme_fg_color, 0.06); }}
+button.summit-tile {{ background-image: none; box-shadow: none; outline-width: 0; border: 1px solid alpha(@theme_fg_color, 0.06); }}
+button.summit-tile:focus {{ box-shadow: inset 0 0 0 2px alpha(@summit_accent, 0.45); }}
+.summit-tile:hover {{ background-color: alpha(@theme_fg_color, 0.11); }}
+.summit-tile.on {{ background-color: @summit_accent; color: @summit_onaccent; border-color: transparent; }}
+.summit-tile.on label, .summit-tile.on image {{ color: @summit_onaccent; }}
+.summit-hero {{ font-size: 21pt; font-weight: 700; }}
+.summit-subtle {{ opacity: 0.68; }}
+.summit-swatch {{ border-radius: 999px; min-width: 30px; min-height: 30px; padding: 0; border: 2px solid alpha(@theme_fg_color, 0.10); }}
+.summit-swatch.selected {{ border: 3px solid @theme_fg_color; }}
+.summit-sidebar {{ background-color: alpha(@theme_fg_color, 0.035); }}
+list.summit-sidebar, .summit-sidebar list {{ background-color: transparent; }}
+button.summit-pick {{ border-radius: 14px; padding: 6px; border: 2px solid transparent; background: none; box-shadow: none; }}
+button.summit-pick:hover {{ background-color: alpha(@theme_fg_color, 0.05); }}
+button.summit-pick:checked {{ background-color: alpha(@summit_accent, 0.12); border-color: @summit_accent; }}
+button.summit-pick:checked label {{ color: @theme_fg_color; font-weight: 600; }}
+.summit-sidebar row {{ border-radius: 9px; margin: 1px 8px; padding: 7px 10px; }}
+.summit-sidebar row:selected {{ background-color: @summit_accent; color: @summit_onaccent; }}
+.summit-sidebar row:selected label, .summit-sidebar row:selected image {{ color: @summit_onaccent; }}
+scale.summit trough {{ min-height: 6px; border-radius: 6px; }}
+scale.summit highlight {{ background-color: @summit_accent; border-radius: 6px; }}
+"""
+    with open(os.path.join(gtkdir, "summit.css"), "w") as f: f.write(css)
+    main = os.path.join(gtkdir, "gtk.css")
+    try: existing = open(main).read()
+    except OSError: existing = ""
+    if '@import url("summit.css");' not in existing:
+        with open(main, "w") as f: f.write('@import url("summit.css");\n' + existing)
+
+    # compositor (glass blur level)
+    blur = s["glass"] == "on"
+    glass_classes = ["Xfce4-panel", "Rofi", "Xfce4-notifyd", "Summit-control-center", "Summit-shell", "Xfce4-terminal"]
+    cond = " || ".join(f"class_g = '{c}'" for c in glass_classes if c != "Xfce4-panel")
+    cond = "(class_g = 'Xfce4-panel' && window_type = 'dock') || " + cond
+    picom = f"""# generated by summit-appearance
+backend = "glx";
+vsync = true;
+use-damage = true;
+shadow = true;
+shadow-radius = 24;
+shadow-opacity = {0.55 if dark else 0.30};
+shadow-offset-x = -24;
+shadow-offset-y = -14;
+shadow-exclude = [ "class_g = 'Plank'", "window_type = 'dock'", "class_g = 'Xfce4-panel' && window_type != 'dock'", "window_type = 'desktop'", "_GTK_FRAME_EXTENTS@:c",
+                   "_NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'", "class_g = 'Rofi' && _NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'" ];
+corner-radius = 14;
+rounded-corners-exclude = [ "window_type = 'dock'", "window_type = 'desktop'", "class_g = 'Plank'", "window_type = 'menu'",
+                            "window_type = 'dropdown_menu'", "window_type = 'popup_menu'", "window_type = 'tooltip'",
+                            "_GTK_FRAME_EXTENTS@:c", "_NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'" ];
+fading = true;
+fade-in-step = 0.09;
+fade-out-step = 0.09;
+detect-rounded-corners = true;
+detect-client-opacity = true;
+{"blur: { method = \"dual_kawase\"; strength = 5; };" if blur else "# glass blur off"}
+{"blur-background-exclude = [ \"!(" + cond + ")\", \"_GTK_FRAME_EXTENTS@:c\", \"window_type = 'dock' && class_g = 'Plank'\" ];" if blur else ""}
+wintypes: {{ tooltip = {{ shadow = false; }}; dock = {{ shadow = false; }}; dnd = {{ shadow = false; }}; }};
+"""
+    with open(os.path.join(cfg, "picom.conf"), "w") as f: f.write(picom)
+    return dark, accent, lv
+
+# ---------------------------------------------------------------- live settings
+def monitors():
+    r = run("xrandr", "--listactivemonitors")
+    names = []
+    if r and r.returncode == 0:
+        for line in r.stdout.splitlines()[1:]:
+            parts = line.split()
+            if parts: names.append(parts[-1])
+    return names or ["0"]
+
+def apply(s, restart_compositor=True):
+    dark, accent, lv = write_files(s)
+    acc = ACCENTS[s["accent"]]
+    gtk = f"{acc[0]}-{'Dark' if dark else 'Light'}"
+    icons = f"Summit-{s['accent'].capitalize()}" + ("-Dark" if dark else "")
+    xf("xsettings", "/Net/ThemeName", "string", gtk)
+    xf("xsettings", "/Net/IconThemeName", "string", icons)
+    xf("xfwm4", "/general/theme", "string", "Summit-Dark" if dark else "Summit")
+    pt = TEXT[s["text"]]
+    xf("xsettings", "/Gtk/FontName", "string", f"Inter {pt:g}")
+    xf("xsettings", "/Gtk/MonospaceFontName", "string", f"JetBrains Mono {pt:g}")
+    xf("xfwm4", "/general/title_font", "string", f"Inter Semi-Bold {pt:g}")
+    xf("xfce4-notifyd", "/theme", "string", "Summit-Glass-Dark" if dark else "Summit-Glass-Light")
+    # menu bar glass
+    base = (0.11, 0.11, 0.13) if dark else (0.98, 0.98, 0.99)
+    xf("xfce4-panel", "/panels/dark-mode", "bool", dark)
+    xf("xfce4-panel", "/panels/panel-1/background-style", "uint", 1)
+    xf_array("xfce4-panel", "/panels/panel-1/background-rgba", "double", [*base, lv["panel"]])
+    # wallpaper on every monitor and workspace
+    wp = wallpaper_path(s, dark)
+    with open(os.path.join(CFG_DIR, "current-wallpaper"), "w") as f: f.write(wp)
+    r = run("xfconf-query", "-c", "xfce4-desktop", "-l")
+    props = [p for p in (r.stdout.split() if r and r.returncode == 0 else []) if p.endswith("/last-image")]
+    for m in monitors():
+        for ws in (0, 1):
+            props.append(f"/backdrop/screen0/monitor{m}/workspace{ws}/last-image")
+    for p in sorted(set(props)):
+        xf("xfce4-desktop", p, "string", wp)
+        xf("xfce4-desktop", p.replace("last-image", "image-style"), "int", 5)
+    # dock
+    plank = "/net/launchpad/plank/docks/dock1/"
+    run("dconf", "write", plank + "theme", "'Summit-Dark'" if dark else "'Summit-Light'")
+    run("dconf", "write", plank + "icon-size", str(max(32, min(80, int(s["dock_size"])))))
+    run("dconf", "write", plank + "zoom-enabled", "true" if s["dock_zoom"] else "false")
+    run("dconf", "write", plank + "zoom-percent", "150")
+    run("dconf", "write", plank + "hide-mode", "'intellihide'" if s["dock_autohide"] else "'none'")
+    # terminal
+    if dark:
+        fg, bg, cur = "#E8E8EE", "#1C1C22", accent
+        pal = "#1c1c22;#ff6b6b;#5ad48a;#f5c451;#5aa9ff;#c792ea;#4fd6d6;#c8c8d0;#5c5c66;#ff8787;#7ee2a2;#ffd77a;#82bfff;#d9a8ff;#7ee8e8;#ffffff"
+    else:
+        fg, bg, cur = "#1D1D1F", "#FBFBFD", accent
+        pal = "#1d1d1f;#d7263d;#1a9a52;#b07d00;#1a73e8;#8e3fd1;#0e8a95;#6e6e73;#8e8e93;#ef4458;#2fbf6c;#d89a00;#3d8cf0;#a65ae0;#1fa8b4;#ffffff"
+    xf("xfce4-terminal", "/color-foreground", "string", fg)
+    xf("xfce4-terminal", "/color-background", "string", bg)
+    xf("xfce4-terminal", "/color-cursor", "string", cur)
+    xf("xfce4-terminal", "/color-palette", "string", pal)
+    xf("xfce4-terminal", "/color-use-theme", "bool", False)
+    xf("xfce4-terminal", "/font-name", "string", f"JetBrains Mono {pt + 0.5:g}")
+    xf("xfce4-terminal", "/font-use-system", "bool", False)
+    xf("xfce4-terminal", "/background-mode", "string",
+       "TERMINAL_BACKGROUND_SOLID" if s["glass"] == "off" else "TERMINAL_BACKGROUND_TRANSPARENT")
+    xf("xfce4-terminal", "/background-darkness", "double", lv["term"])
+    xf("xfce4-terminal", "/misc-cursor-shape", "string", "TERMINAL_CURSOR_SHAPE_IBEAM")
+    xf("xfce4-terminal", "/scrolling-bar", "string", "TERMINAL_SCROLLBAR_NONE")
+    # Summit menu: whisker 2.8 keeps its settings in xfconf (<100 gives its window an alpha channel)
+    xf("xfce4-panel", "/plugins/plugin-1/menu-opacity", "int", lv["menu"])
+    rc = os.path.join(HOME, ".config", "xfce4", "panel", "whiskermenu-1.rc")
+    try:
+        lines = open(rc).read().splitlines()
+        lines = [l for l in lines if not l.startswith("menu-opacity=")] + [f"menu-opacity={lv['menu']}"]
+        open(rc, "w").write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+    if restart_compositor:
+        run("pkill", "-u", str(os.getuid()), "-x", "picom")
+        subprocess.Popen(["/usr/local/bin/summit-compositor"], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(os.path.join(CFG_DIR, "applied"), "w") as f: f.write("dark" if dark else "light")
+    return dark
+
+def parse_value(k, v):
+    if k in ("dock_zoom", "dock_autohide"): return v.lower() in ("1", "true", "yes", "on")
+    if k == "dock_size": return int(v)
+    return v
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "apply"
+    s = load()
+    if cmd == "get":
+        out = dict(s); out["effective_dark"] = is_dark(s); print(json.dumps(out)); return 0
+    if cmd == "write-files":
+        home = argv[2] if len(argv) > 2 else HOME
+        write_files(s, home); return 0
+    if cmd == "auto-check":
+        if s["mode"] != "auto": return 0
+        want = "dark" if is_dark(s) else "light"
+        try: have = open(os.path.join(CFG_DIR, "applied")).read().strip()
+        except OSError: have = ""
+        if want != have: apply(s)
+        return 0
+    if cmd == "set":
+        old_glass = s["glass"]
+        for kv in argv[2:]:
+            if "=" not in kv: continue
+            k, v = kv.split("=", 1)
+            if k in DEFAULTS: s[k] = parse_value(k, v)
+        save(s)
+        apply(s, restart_compositor=True)
+        if s["glass"] != old_glass:
+            run("xfce4-panel", "-r")        # menu transparency is read at panel start
+        return 0
+    if cmd == "session-start":
+        if not os.path.exists(STATE):
+            save(s); apply(s, restart_compositor=False); return 0
+        write_files(s)
+        if s["mode"] == "auto":
+            want = "dark" if is_dark(s) else "light"
+            try: have = open(os.path.join(CFG_DIR, "applied")).read().strip()
+            except OSError: have = ""
+            if want != have: apply(s, restart_compositor=False)
+        return 0
+    if cmd == "apply":
+        save(s); apply(s); return 0
+    if cmd == "refresh-glass":          # called by summit-compositor after it learns whether blur works
+        apply(s, restart_compositor=False); run("xfce4-panel", "-r"); return 0
+    print(__doc__); return 1
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,71 @@
+@import "/usr/share/summitos/theme-default.rasi"
+@import "~/.config/summit/theme.rasi"
+configuration {
+  show-icons: true;
+  font: "Inter 13";
+  matching: "normal";
+  sort: true;
+  sorting-method: "fzf";
+}
+* {
+  background-color: transparent;
+  text-color: @fg;
+}
+window {
+  transparency: "real";
+  location: north;
+  y-offset: 20%;
+  width: 680px;
+  border-radius: 18px;
+  background-color: @glass;
+  border: 1px;
+  border-color: @rim;
+}
+mainbox {
+  padding: 10px;
+  spacing: 4px;
+  children: [ inputbar, listview ];
+}
+inputbar {
+  padding: 8px 12px 10px 12px;
+  spacing: 12px;
+  border: 0 0 1px 0;
+  border-color: @line;
+  children: [ icon-search, entry ];
+}
+icon-search {
+  expand: false;
+  filename: "system-search-symbolic";
+  size: 24px;
+  vertical-align: 0.5;
+}
+entry {
+  placeholder: "Spotlight Search";
+  placeholder-color: @sub;
+  font: "Inter 19";
+  vertical-align: 0.5;
+  cursor-color: @accent;
+}
+listview {
+  lines: 7;
+  fixed-height: false;
+  padding: 6px 0 0 0;
+  scrollbar: false;
+  spacing: 2px;
+}
+element {
+  padding: 8px 12px;
+  spacing: 14px;
+  border-radius: 10px;
+}
+element selected {
+  background-color: @accent;
+  text-color: @onaccent;
+}
+element-icon {
+  size: 30px;
+}
+element-text {
+  vertical-align: 0.5;
+  text-color: inherit;
+}

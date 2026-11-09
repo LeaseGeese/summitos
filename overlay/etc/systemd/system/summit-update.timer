@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for Summit OS updates
+
+[Timer]
+# wakes every 2 minutes; summit-update only actually checks when it's due
+# (every 6 hours normally, every 2 minutes in Live testing mode)
+OnBootSec=90s
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

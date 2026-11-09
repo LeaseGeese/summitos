@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Summit Update (login)
+Comment=Finishes any Summit update that was installed while you were signed out
+Exec=sh -c "sleep 8; summit-update-session --login"
+OnlyShowIn=XFCE;
+NoDisplay=true

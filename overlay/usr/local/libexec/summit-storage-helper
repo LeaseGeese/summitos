@@ -1,0 +1,50 @@
+#!/bin/bash
+# Summit OS storage helper (run through pkexec).
+#   setup /dev/sdX   erase a whole internal drive and set it up as "iMac HD" storage
+# Refuses any drive that holds the running system, a boot partition or active swap.
+set -euo pipefail
+ACTION="${1:-}"; DEV="${2:-}"
+CALLER="$(id -nu "${PKEXEC_UID:-0}")"
+[ "$CALLER" != "root" ] || { echo "Must be run from Summit Settings." >&2; exit 1; }
+MNT=/mnt/imac-hd
+LABEL="iMac HD"
+
+fail() { echo "$*" >&2; exit 2; }
+
+case "$ACTION" in
+  setup)
+    [[ "$DEV" =~ ^/dev/(sd[a-z]+|vd[a-z]+|nvme[0-9]+n[0-9]+)$ ]] || fail "Not a whole drive: $DEV"
+    [ -b "$DEV" ] || fail "Drive not found: $DEV"
+    grep -q "boot=casper" /proc/cmdline && fail "Storage can only be set up after Summit is installed."
+    # safety: nothing on this drive may be the system, boot or swap
+    ROOTSRC="$(findmnt -no SOURCE / || true)"; EFISRC="$(findmnt -no SOURCE /boot/efi || true)"
+    for p in $(lsblk -nrpo NAME "$DEV"); do
+      [ "$p" = "$ROOTSRC" ] && fail "This drive holds the running system."
+      [ -n "$EFISRC" ] && [ "$p" = "$EFISRC" ] && fail "This drive holds the boot partition."
+      grep -q "^$p " /proc/swaps && fail "This drive is being used for swap."
+    done
+    # unmount anything the desktop auto-mounted from this drive
+    for p in $(lsblk -nrpo NAME "$DEV" | tail -n +2); do
+      mp="$(findmnt -no TARGET "$p" || true)"; [ -n "$mp" ] && umount "$p"
+    done
+    umount "$MNT" 2>/dev/null || true
+    wipefs -a "$DEV" >/dev/null
+    sgdisk --zap-all "$DEV" >/dev/null 2>&1 || true
+    sgdisk -n1:0:0 -t1:8300 -c1:"$LABEL" "$DEV" >/dev/null
+    partprobe "$DEV" 2>/dev/null || true; udevadm settle
+    PART="$(lsblk -nrpo NAME "$DEV" | sed -n 2p)"
+    [ -b "$PART" ] || fail "Couldn't create the partition."
+    mkfs.ext4 -F -q -L "$LABEL" -m 0 -E lazy_itable_init=1,lazy_journal_init=1 "$PART"
+    udevadm settle
+    UUID="$(blkid -s UUID -o value "$PART")"
+    mkdir -p "$MNT"
+    sed -i "\|[[:space:]]$MNT[[:space:]]|d" /etc/fstab
+    echo "UUID=$UUID $MNT ext4 defaults,noatime,nofail,x-systemd.device-timeout=2min,x-gvfs-show,x-gvfs-name=iMac%20HD,x-gvfs-icon=drive-harddisk 0 2" >> /etc/fstab
+    systemctl daemon-reload
+    mount "$MNT"
+    install -d -o "$CALLER" -g "$CALLER" -m 0755 "$MNT/$CALLER"
+    install -d -o "$CALLER" -g "$CALLER" -m 0700 "$MNT/TimeMachine"
+    chown "$CALLER:$CALLER" "$MNT"
+    echo "ok $PART $UUID" ;;
+  *) echo "unknown action" >&2; exit 64 ;;
+esac

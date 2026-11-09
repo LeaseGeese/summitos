@@ -1,0 +1,32 @@
+---
+componentName: summit
+welcomeStyleCalamares: false
+welcomeExpandingLogo: true
+windowExpanding: normal
+windowSize: 900px,600px
+windowPlacement: center
+sidebar: widget
+navigation: widget
+strings:
+    productName:         Summit OS
+    shortProductName:    Summit
+    version:             1.21
+    shortVersion:        1.21
+    versionedName:       Summit OS 1.21
+    shortVersionedName:  Summit 1.21
+    bootloaderEntryName: SummitOS
+    productUrl:          https://ubuntu.com
+    supportUrl:          https://ubuntu.com
+    knownIssuesUrl:      https://ubuntu.com
+    releaseNotesUrl:     https://ubuntu.com
+images:
+    productLogo:         "logo.png"
+    productIcon:         "logo.png"
+    productWelcome:      "welcome.png"
+slideshow:               "show.qml"
+slideshowAPI:            2
+style:
+   SidebarBackground:        "#f2f2f5"
+   SidebarText:              "#1d1d1f"
+   SidebarTextCurrent:       "#ffffff"
+   SidebarBackgroundCurrent: "#2f6ff0"

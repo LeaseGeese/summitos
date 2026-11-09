@@ -1,0 +1,8 @@
+#!/bin/sh
+# Applies the Auto (day/night) appearance when the time comes.
+# Only wakes the (Python) appearance tool when Auto mode is actually on.
+summit-appearance session-start
+CFG="$HOME/.config/summit/appearance.json"
+while sleep 300; do
+  grep -q '"mode": "auto"' "$CFG" 2>/dev/null && summit-appearance auto-check
+done

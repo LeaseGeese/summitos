@@ -1,0 +1,2 @@
+# Files to delete from installed systems, one path per line (relative to /), e.g.
+# usr/local/bin/old-tool

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Runs a Summit Connect user service and advertises it over Bonjour while it runs.
+NAME="$(hostname)"
+case "$1" in
+  screen)
+    [ -f "$HOME/.vnc/passwd" ] || exit 1
+    pkill -u "$(id -u)" -x x11vnc 2>/dev/null
+    x11vnc -display "${DISPLAY:-:0}" -rfbauth "$HOME/.vnc/passwd" -rfbport 5900 \
+           -forever -shared -noxdamage -repeat -nopw -quiet -bg -o "$HOME/.cache/summit-x11vnc.log"
+    exec avahi-publish -s "$NAME" _rfb._tcp 5900 ;;
+  airplay)
+    pkill -u "$(id -u)" -x uxplay 2>/dev/null
+    exec uxplay -n "$NAME" -nh -fs -p ;;
+  stop-screen)
+    pkill -u "$(id -u)" -x x11vnc; pkill -u "$(id -u)" -f "avahi-publish -s .* _rfb._tcp" ;;
+  stop-airplay)
+    pkill -u "$(id -u)" -x uxplay ;;
+esac

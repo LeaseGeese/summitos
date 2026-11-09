@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Spotlight
+Comment=Search apps (Cmd+Space)
+Exec=summit-spotlight
+Icon=system-search-symbolic
+NoDisplay=true

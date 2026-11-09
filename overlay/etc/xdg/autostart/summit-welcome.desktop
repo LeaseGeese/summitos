@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome to Summit
+Exec=sh -c "f=${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u); i=0; while [ ! -s $f ] && [ $i -lt 40 ]; do sleep 0.5; i=$((i+1)); done; sleep 1; exec summit-settings --welcome"
+OnlyShowIn=XFCE;
+NoDisplay=true

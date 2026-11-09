@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Summit Connect
+Comment=Share this iMac with your Mac: files, screen, AirPlay, keyboard and mouse
+Exec=summit-settings --page sharing
+Icon=summit-connect
+Terminal=false
+Categories=Network;System;
+Keywords=mac;airplay;share;finder;vnc;ssh;time machine;night shift;
+NoDisplay=true

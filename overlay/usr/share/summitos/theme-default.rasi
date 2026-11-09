@@ -1,0 +1,2 @@
+* { glass: rgba(248,248,252,0.74); fg: #1d1d1f; sub: #8a8a8e; line: rgba(0,0,0,0.08); rim: rgba(255,255,255,0.7);
+    accent: #2f6df6; onaccent: #ffffff; lpglass: rgba(12,12,28,0.42); }

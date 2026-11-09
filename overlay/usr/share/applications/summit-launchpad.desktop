@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Launchpad
+Comment=Show all apps
+Exec=summit-launchpad
+Icon=summit-launchpad
+Terminal=false
+Categories=System;
+NoDisplay=true

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Summit OS: the live session never uses swap partitions on the computer's own drives
+# (it has compressed RAM swap), so trying Summit leaves internal disks untouched.
+case $1 in prereqs) echo ""; exit 0;; esac
+exit 0

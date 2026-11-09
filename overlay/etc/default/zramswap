@@ -1,0 +1,5 @@
+# Summit OS: compressed swap in RAM (zstd). Uses up to 60% of RAM worth of
+# compressed pages, so a full 8 GB machine behaves more like ~12 GB.
+ALGO=zstd
+PERCENT=60
+PRIORITY=100

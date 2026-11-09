@@ -1,0 +1,87 @@
+#!/usr/bin/python3
+"""Before the installer opens: show the drives in plain words and recommend the SSD."""
+import json, subprocess, os, sys, re
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, GLib
+
+def drives():
+    r = subprocess.run(["lsblk", "-J", "-b", "-d", "-o", "NAME,PATH,MODEL,SIZE,ROTA,TRAN,RM,TYPE"], capture_output=True, text=True)
+    try: data = json.loads(r.stdout)["blockdevices"]
+    except Exception: return []
+    live = subprocess.run(["sh", "-c", "lsblk -no PKNAME $(findmnt -no SOURCE /cdrom 2>/dev/null) 2>/dev/null | head -1"],
+                          capture_output=True, text=True).stdout.strip()
+    out = []
+    for d in data:
+        if d.get("type") != "disk" or d["name"].startswith(("loop", "sr", "zram")) or d["name"] == live: continue
+        if int(d.get("size") or 0) < 8e9: continue
+        rota = str(d.get("rota")).lower() in ("1", "true")
+        disc = open(f"/sys/block/{d['name']}/queue/discard_max_bytes").read().strip() if os.path.exists(f"/sys/block/{d['name']}/queue/discard_max_bytes") else "0"
+        model = (d.get("model") or "").strip()
+        tran = (d.get("tran") or "").lower()
+        # many USB enclosures report an SSD as "rotational"; TRIM support or the model name gives it away
+        d["ssd"] = (not rota) or (tran == "usb" and disc != "0") or bool(SSD_NAME.search(model))
+        d["internal"] = tran in ("sata", "ata", "sas", "nvme") and str(d.get("rm")).lower() not in ("1", "true")
+        d["where"] = "internal" if d["internal"] else ("Thunderbolt" if tran == "thunderbolt" else ("USB" if tran == "usb" else "external"))
+        out.append(d)
+    return out
+
+SSD_NAME = re.compile(r"ssd|nvme|\bt[579]\b|_t[579]|extreme", re.I)
+
+def gb(n): return f"{int(n) / 1e9:.0f} GB"
+
+def main():
+    ds = drives()
+    internal_hdd = [d for d in ds if d["internal"] and not d["ssd"]]
+    targets = [d for d in ds if d not in internal_hdd]
+    # recommend an SSD; otherwise, if the iMac's internal hard drive is present, the external drive
+    ssd = next((d for d in targets if d["ssd"]), None) or (targets[0] if internal_hdd and targets else None)
+    w = Gtk.Window(title="Install Summit OS"); w.set_default_size(560, -1); w.set_position(Gtk.WindowPosition.CENTER)
+    w.set_icon_name("summitos"); w.set_resizable(False)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=28)
+    img = Gtk.Image.new_from_icon_name("summitos", Gtk.IconSize.DIALOG); img.set_pixel_size(84); box.pack_start(img, False, False, 0)
+    t = Gtk.Label(); t.set_markup("<span size='x-large' weight='bold'>Install Summit OS</span>"); box.pack_start(t, False, False, 0)
+    if ssd:
+        what = "SSD" if ssd["ssd"] else "external drive"
+        msg = (f"Install on your <b>{what}</b> for the best speed. In the installer's <b>Partitions</b> step, pick it from "
+               f"the <b>Select storage device</b> menu at the top:\n\n<b>{GLib.markup_escape_text((ssd.get('model') or ssd['name']).strip())}</b>, "
+               f"{gb(ssd['size'])} — {ssd['path']}")
+    else:
+        msg = "In the installer's <b>Partitions</b> step, pick the drive to install on from the <b>Select storage device</b> menu at the top."
+    m = Gtk.Label(wrap=True, xalign=0, max_width_chars=56); m.set_markup(msg); box.pack_start(m, False, False, 0)
+    grid = Gtk.Grid(column_spacing=14, row_spacing=6)
+    for i, d in enumerate(ds):
+        kind = ("SSD" if d["ssd"] else ("Hard drive" if d["internal"] else "Drive")) + f" ({d['where']})"
+        tag = "  ← recommended" if d is ssd else ""
+        for c, txt in enumerate((d["path"], (d.get("model") or "").strip(), gb(d["size"]), kind + tag)):
+            l = Gtk.Label(label=txt, xalign=0)
+            if c < 2: l.get_style_context().add_class("dim-label")
+            grid.attach(l, c, i, 1, 1)
+    if ds: box.pack_start(grid, False, False, 0)
+    hdd = internal_hdd
+    protect = None
+    if ssd and hdd:
+        protect = Gtk.CheckButton(active=True)
+        pl = Gtk.Label(wrap=True, xalign=0, max_width_chars=52)
+        pl.set_markup("<b>Keep the internal hard drive safe while installing</b>\nThe installer will only see the drive you're installing on. "
+                      "Afterwards, Summit can set the hard drive up as <b>iMac HD</b> for your files and Time Machine backups.")
+        protect.add(pl); box.pack_start(protect, False, False, 0)
+    btns = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+    c = Gtk.Button(label="Cancel"); c.connect("clicked", lambda *_: w.destroy())
+    go = Gtk.Button(label="Open Installer"); go.get_style_context().add_class("suggested-action")
+    def start(*_):
+        hide = [d["name"] for d in hdd if d["name"].startswith("sd")] if (protect is not None and protect.get_active()) else []
+        # Detach the internal drive from the system while the installer runs, so it can't be picked or erased;
+        # a bus rescan brings it straight back when the installer closes.
+        # first release anything the live session is using on it (old swap partitions, auto-mounted volumes)
+        release = "".join(f"for p in $(lsblk -nrpo NAME /dev/{n} | tail -n +2); do swapoff $p 2>/dev/null; umount $p 2>/dev/null; done; " for n in hide)
+        detach = release + "".join(f"echo 1 > /sys/block/{n}/device/delete; " for n in hide)
+        reattach = "for h in /sys/class/scsi_host/host*/scan; do echo '- - -' > $h; done; udevadm settle; " if hide else ""
+        script = detach + "udevadm settle; calamares; " + reattach
+        subprocess.Popen(["sudo", "-E", "sh", "-c", script], start_new_session=True); w.destroy()
+    go.connect("clicked", start)
+    btns.pack_start(c, False, False, 0); btns.pack_start(go, False, False, 0); box.pack_start(btns, False, False, 6)
+    w.add(box); w.connect("destroy", Gtk.main_quit); w.show_all(); go.grab_focus(); Gtk.main()
+
+if __name__ == "__main__":
+    main()

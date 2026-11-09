@@ -1,0 +1,22 @@
+#!/bin/sh
+# Summit OS: keep the drive's generic boot folder (EFI/BOOT) a complete, working copy of the boot loader.
+# Macs start external and internal Linux drives through EFI/BOOT/BOOTX64.EFI (Option key -> "EFI Boot").
+# Ubuntu's default puts only a "fallback" helper there, which relies on firmware boot entries that Apple
+# firmware doesn't keep, and the result is a bare "grub>" prompt. Runs after installs and package updates.
+ESP=/boot/efi
+[ -d "$ESP/EFI" ] || exit 0
+SRC=""
+for d in summitos ubuntu; do
+  if [ -f "$ESP/EFI/$d/shimx64.efi" ] && [ -f "$ESP/EFI/$d/grubx64.efi" ]; then
+    if [ -z "$SRC" ] || [ "$ESP/EFI/$d/grubx64.efi" -nt "$SRC/grubx64.efi" ]; then SRC="$ESP/EFI/$d"; fi
+  fi
+done
+[ -n "$SRC" ] || exit 0
+mkdir -p "$ESP/EFI/BOOT"
+put() { [ -f "$1" ] || return 0; cmp -s "$1" "$2" 2>/dev/null || cp "$1" "$2"; }
+put "$SRC/shimx64.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
+put "$SRC/grubx64.efi" "$ESP/EFI/BOOT/grubx64.efi"
+put "$SRC/mmx64.efi"   "$ESP/EFI/BOOT/mmx64.efi"
+put "$SRC/grub.cfg"    "$ESP/EFI/BOOT/grub.cfg"
+rm -f "$ESP/EFI/BOOT/fbx64.efi"
+exit 0

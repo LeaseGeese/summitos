@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Disk Health Check
+Exec=sh -c "sleep 90; summit-disk-health"
+OnlyShowIn=XFCE;
+NoDisplay=true

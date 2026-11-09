@@ -1,0 +1,5 @@
+#!/bin/sh
+# exit 0 only when the system disk is a spinning hard drive (used to enable preload)
+src=$(findmnt -no SOURCE / 2>/dev/null) || exit 1
+disk=$(lsblk -no PKNAME "$src" 2>/dev/null | head -1); [ -n "$disk" ] || exit 1
+[ "$(cat /sys/block/$disk/queue/rotational 2>/dev/null)" = "1" ]

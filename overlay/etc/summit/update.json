@@ -1,0 +1,7 @@
+{
+  "repo": "LeaseGeese/summitos",
+  "branch": "main",
+  "auto_install": false,
+  "live": false,
+  "interval_minutes": 360
+}

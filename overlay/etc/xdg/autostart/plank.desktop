@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Dock
+Exec=sh -c "sleep 2; plank"
+OnlyShowIn=XFCE;
+NoDisplay=true

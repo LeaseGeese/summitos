@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Install Summit OS
+Comment=Install Summit OS to this computer's drive
+Exec=summit-install
+Icon=summitos
+Terminal=false
+Categories=System;
