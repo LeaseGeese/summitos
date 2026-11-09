@@ -66,7 +66,7 @@
       <property name="mode" type="uint" value="2"/>
       <property name="digital-layout" type="uint" value="3"/>
       <property name="digital-time-format" type="string" value="%a %b %-d  %-I:%M %p"/>
-      <property name="digital-time-font" type="string" value="Inter Semi-Bold 10.5"/>
+      <property name="digital-time-font" type="string" value="Inter Medium 10"/>
     </property>
     <property name="plugin-9" type="string" value="separator">
       <property name="expand" type="bool" value="false"/>

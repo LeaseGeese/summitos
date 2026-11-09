@@ -22,7 +22,7 @@ WALLS = "/usr/share/backgrounds/summitos"
 
 DEFAULTS = {"accent": "blue", "mode": "light", "wallpaper": "spectrum", "glass": "on",
             "dock_size": 52, "dock_zoom": True, "dock_autohide": False, "text": "default"}
-TEXT = {"small": 9.5, "default": 10.5, "large": 12, "larger": 13.5}
+TEXT = {"small": 9, "default": 10, "large": 11.5, "larger": 13}
 
 #            Orchis name      Papirus folder  light accent  dark accent   text on accent
 ACCENTS = {
@@ -139,6 +139,38 @@ def glass_levels(s, dark):
         "menu":   99,                        # <100 gives the menu window an alpha channel, so its corners can be transparent
     }
 
+VISUAL = {"accent", "mode", "wallpaper", "glass", "text"}   # changes that restyle the whole screen
+
+def expected_repaints(changed, s):
+    """Which parts of the screen will visibly change, so the crossfade waits for exactly those."""
+    e = set()
+    if changed & {"mode", "text", "glass"}: e.add("panel")
+    if "mode" in changed: e |= {"dock", "desktop"}
+    if "wallpaper" in changed or ("accent" in changed and s.get("wallpaper") == "accent"): e.add("desktop")
+    return sorted(e)
+
+def transition_start(expect=()):
+    """Freeze the screen under a snapshot while things switch (see summit-transition). Returns a handle or None."""
+    if not os.environ.get("DISPLAY") or not shutil.which("summit-transition"): return None
+    if os.environ.get("SUMMIT_TRANSITION") == "0": return None      # for testing / troubleshooting
+    import select
+    try:
+        p = subprocess.Popen(["summit-transition"] + (["--expect", ",".join(expect)] if expect else []), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return None
+    r, _, _ = select.select([p.stdout], [], [], 5)
+    if r and p.stdout.readline().strip() == b"ready": return p
+    try: p.kill()
+    except OSError: pass
+    return None
+
+def transition_end(p):
+    if p is None: return
+    try:
+        p.stdin.write(b"go\n"); p.stdin.close()
+    except OSError: pass
+
 def write_files(s, home=HOME):
     dark = is_dark(s)
     acc = ACCENTS[s["accent"]]
@@ -172,12 +204,17 @@ def write_files(s, home=HOME):
 @define-color summit_spot {spot};
 @define-color summit_rim {rim};
 
+/* type: Inter everywhere, with the alternate "l" (has a tail, so I l 1 are easy to tell apart);
+   Inter Display for large titles. Text views (editors, terminals) keep their own fonts. */
+label, entry, spinbutton, menuitem, tooltip, button {{ font-feature-settings: "cv05"; }}
+.summit-hero, .summit-spotlight-entry {{ font-family: "Inter Display"; }}
+
 /* menu bar */
 .xfce4-panel {{ font-family: Inter; font-size: {TEXT[s['text']]}pt; }}
 .xfce4-panel button {{ border-radius: 8px; padding: 0 8px; margin: 2px 1px; border: none; box-shadow: none; }}
 .xfce4-panel button:hover {{ background-color: {hover}; }}
 .xfce4-panel button:checked, .xfce4-panel button:active {{ background-color: alpha(@summit_accent, 0.22); }}
-.xfce4-panel #clock-button label, .xfce4-panel .clock label {{ font-weight: 600; }}
+.xfce4-panel #clock-button label, .xfce4-panel .clock label {{ font-weight: 500; font-feature-settings: "cv05", "tnum"; }}
 
 /* Summit menu (whisker) */
 #whiskermenu-window {{ background-color: transparent; border: none; box-shadow: none; }}
@@ -226,7 +263,7 @@ button.summit-tile:focus {{ box-shadow: inset 0 0 0 2px alpha(@summit_accent, 0.
 .summit-tile:hover {{ background-color: alpha(@theme_fg_color, 0.11); }}
 .summit-tile.on {{ background-color: @summit_accent; color: @summit_onaccent; border-color: transparent; }}
 .summit-tile.on label, .summit-tile.on image {{ color: @summit_onaccent; }}
-.summit-hero {{ font-size: 21pt; font-weight: 700; }}
+.summit-hero {{ font-size: 21pt; font-weight: 600; letter-spacing: -0.2px; }}
 .summit-subtle {{ opacity: 0.68; }}
 .summit-swatch {{ border-radius: 999px; min-width: 30px; min-height: 30px; padding: 0; border: 2px solid alpha(@theme_fg_color, 0.10); }}
 .summit-swatch.selected {{ border: 3px solid @theme_fg_color; }}
@@ -265,18 +302,21 @@ glx-no-stencil = true;
 unredir-if-possible = true;
 shadow = true;
 shadow-radius = 24;
-shadow-opacity = {0.55 if dark else 0.30};
+shadow-opacity = 0.42;
 shadow-offset-x = -24;
 shadow-offset-y = -14;
-shadow-exclude = [ "class_g = 'Plank'", "window_type = 'dock'", "class_g = 'Xfce4-panel' && window_type != 'dock'", "window_type = 'desktop'", "_GTK_FRAME_EXTENTS@:c",
+shadow-exclude = [ "class_g = 'Summit-transition'", "class_g = 'Plank'", "window_type = 'dock'", "class_g = 'Xfce4-panel' && window_type != 'dock'", "window_type = 'desktop'", "_GTK_FRAME_EXTENTS@:c",
                    "_NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'", "class_g = 'Rofi' && _NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'" ];
 corner-radius = 14;
-rounded-corners-exclude = [ "window_type = 'dock'", "window_type = 'desktop'", "class_g = 'Plank'", "window_type = 'menu'",
+rounded-corners-exclude = [ "class_g = 'Summit-transition'", "window_type = 'dock'", "window_type = 'desktop'", "class_g = 'Plank'", "window_type = 'menu'",
                             "window_type = 'dropdown_menu'", "window_type = 'popup_menu'", "window_type = 'tooltip'",
                             "_GTK_FRAME_EXTENTS@:c", "_NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'" ];
 fading = true;
 fade-in-step = 0.09;
 fade-out-step = 0.09;
+# the appearance crossfade animates itself and must never trigger full-screen bypass
+fade-exclude = [ "class_g = 'Summit-transition'" ];
+unredir-if-possible-exclude = [ "class_g = 'Summit-transition'" ];
 detect-rounded-corners = true;
 detect-client-opacity = true;
 {"blur: { method = \"dual_kawase\"; strength = 5; };" if blur else "# glass blur off"}
@@ -295,6 +335,7 @@ fading = false;
 corner-radius = 0;
 detect-client-opacity = true;
 unredir-if-possible = true;
+unredir-if-possible-exclude = [ "class_g = 'Summit-transition'" ];
 """
     write_if_changed(os.path.join(cfg, "picom-soft.conf"), soft, in_place=True)
     return dark, accent, lv
@@ -337,6 +378,13 @@ def apply(s, restart_compositor=True, changed=None):
         xf("xsettings", "/Gtk/FontName", "string", f"Inter {pt:g}")
         xf("xsettings", "/Gtk/MonospaceFontName", "string", f"JetBrains Mono {pt:g}")
         xf("xfwm4", "/general/title_font", "string", f"Inter Semi-Bold {pt:g}")
+        # smooth greyscale text (subpixel colour fringes look rough on the glass), light hinting
+        xf("xsettings", "/Xft/Antialias", "int", 1)
+        xf("xsettings", "/Xft/HintStyle", "string", "hintslight")
+        xf("xsettings", "/Xft/RGBA", "string", "none")
+        for prop, val in _xf_current("xfce4-panel").items():          # the menu bar clock
+            if val == "clock" and prop.startswith("/plugins/plugin-") and prop.count("/") == 2:
+                xf("xfce4-panel", prop + "/digital-time-font", "string", f"Inter Medium {pt:g}")
     if want("mode", "glass"):
         base = (0.11, 0.11, 0.13) if dark else (0.98, 0.98, 0.99)
         xf("xfce4-panel", "/panels/dark-mode", "bool", dark)
@@ -419,7 +467,8 @@ def main(argv):
         want = "dark" if is_dark(s) else "light"
         try: have = open(os.path.join(CFG_DIR, "applied")).read().strip()
         except OSError: have = ""
-        if want != have: apply(s)
+        if want != have:
+            apply(s)       # no crossfade: this runs on a timer, possibly while the screen is blanked or locked
         return 0
     if cmd == "set":
         import fcntl
@@ -437,9 +486,13 @@ def main(argv):
                 s[k] = v
         if not changed: return 0
         save(s)
-        apply(s, restart_compositor=True, changed=changed)
-        if "glass" in changed:
-            run("xfce4-panel", "-r")        # menu transparency is read at panel start
+        t = transition_start(expected_repaints(changed, s)) if changed & VISUAL else None
+        try:
+            apply(s, restart_compositor=True, changed=changed)
+            if "glass" in changed:
+                run("xfce4-panel", "-r")        # menu transparency is read at panel start
+        finally:
+            transition_end(t)
         return 0
     if cmd == "session-start":
         if not os.path.exists(STATE):
@@ -452,7 +505,11 @@ def main(argv):
             if want != have: apply(s, restart_compositor=False)
         return 0
     if cmd == "apply":
-        save(s); apply(s); return 0
+        save(s)
+        t = transition_start(["panel"])
+        try: apply(s)
+        finally: transition_end(t)
+        return 0
     if cmd == "refresh-glass":          # called by summit-compositor after it learns whether blur works
         apply(s, restart_compositor=False, changed={"glass"}); return 0
     print(__doc__); return 1

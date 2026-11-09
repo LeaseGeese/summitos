@@ -17,7 +17,9 @@ STORAGE_MNT = "/mnt/imac-hd"
 ACCENT_HEX = {"blue": "#1A73E8", "purple": "#9C3FD1", "pink": "#E0306F", "orange": "#EF6C00",
               "yellow": "#F5C400", "green": "#2E9E4F", "silver": "#9AA3AE"}
 ACCENT_ORDER = ["blue", "purple", "pink", "orange", "yellow", "green", "silver"]
-WALL_ORDER = ["accent", "spectrum"] + ACCENT_ORDER
+NATURE_ORDER = ["peaks", "lake", "coast", "dunes", "forest", "hills"]
+NATURE_NAMES = {"peaks": "Peaks", "lake": "Alpine Lake", "coast": "Coast", "dunes": "Dunes", "forest": "Forest", "hills": "Meadow"}
+WALL_ORDER = ["accent", "spectrum"] + NATURE_ORDER + ACCENT_ORDER
 
 def sh(*a, **kw):
     kw.setdefault("timeout", 30)
@@ -136,7 +138,7 @@ class AppearancePage(Gtk.Box):
                            column_spacing=10, row_spacing=10, homogeneous=True)
         self.wall_btns = {}
         for w in WALL_ORDER:
-            name = {"accent": "Matches accent", "spectrum": "Spectrum"}.get(w, w.capitalize())
+            name = {"accent": "Matches accent", "spectrum": "Spectrum", **NATURE_NAMES}.get(w, w.capitalize())
             thumbname = "blue" if w == "accent" else w
             b = Gtk.ToggleButton(relief=Gtk.ReliefStyle.NONE); b.get_style_context().add_class("summit-pick")
             v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)

@@ -59,7 +59,7 @@ if [ "$1" != "--login" ] && [ -n "$DISPLAY" ]; then
   if touched 'usr/share/plank/*' 'usr/share/icons/*' 'usr/share/applications/*' 'usr/share/summitos/icons/*'; then
     restart plank -x; launch plank                       # dock
   fi
-  if touched 'etc/xdg/xfce4/panel/*' 'usr/share/xfce4/panel/*' 'usr/lib/x86_64-linux-gnu/xfce4/panel/*'; then
+  if touched 'etc/xdg/xfce4/panel/*' 'usr/share/xfce4/panel/*' 'usr/lib/x86_64-linux-gnu/xfce4/panel/*' 'usr/lib/x86_64-linux-gnu/gtk-3.0/modules/*'; then
     xfce4-panel -r >/dev/null 2>&1 9>&- &                                                  # menu bar
   fi
   # self-heal: the dock, Spotlight and notifications should always be running

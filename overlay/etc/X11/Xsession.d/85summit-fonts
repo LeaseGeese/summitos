@@ -1,0 +1,3 @@
+# Summit OS: FreeType "stem darkening" gives text a little more weight at small sizes,
+# so light-hinted, greyscale text stays crisp and easy to read (the way macOS renders it).
+export FREETYPE_PROPERTIES="cff:no-stem-darkening=0 autofitter:no-stem-darkening=0"

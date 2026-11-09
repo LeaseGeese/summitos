@@ -9,4 +9,10 @@ if fuser "${XDG_RUNTIME_DIR:-/tmp}/summit-update-session.lock" >/dev/null 2>&1; 
   systemd-run --user --quiet --collect --scope -- setsid plank >/dev/null 2>&1 </dev/null 9>&- &
   systemd-run --user --quiet --collect --scope -- setsid summit-shell >/dev/null 2>&1 </dev/null 9>&- &
 fi
+# 1.22.3: load Summit's GTK module (hides the underlined letters in the menu bar)
+cur=$(xfconf-query -c xsettings -p /Gtk/Modules 2>/dev/null)
+case ":$cur:" in
+  *:summit-gtk-module:*) ;;
+  *) xfconf-query -c xsettings -p /Gtk/Modules -n -t string -s "${cur:+$cur:}summit-gtk-module" ;;
+esac
 exit 0

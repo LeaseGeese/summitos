@@ -15,6 +15,7 @@ A macOS-style desktop for a 2014 iMac, built on Ubuntu 24.04 LTS. This repositor
 | `tools/install-updater.sh` | Adds updates to an existing Summit 1.2x install |
 | `build/` | Package list, diversions and `build-iso.sh` to build the ISO from scratch |
 | `design/` | Generators for icons, wallpapers and window buttons |
+| `build/src/` | Source for compiled helpers shipped in `overlay/` (the GTK module that hides menu-bar underlines) |
 
 ## How updates work
 1. A change is made under `overlay/`, then `tools/publish.sh "what changed"` bumps the version and pushes.
