@@ -1,13 +1,10 @@
 {
-  "version": "1.22.1",
-  "build": 12201,
-  "restart": "reboot",
+  "version": "1.22.2",
+  "build": 12202,
+  "restart": "session",
   "notes": [
-    "Changing the accent colour is now quick and smooth: the glass no longer flickers or restarts",
-    "Graphics: switched to the modern Intel driver for smoother, faster drawing (restart once to finish)",
-    "The glass compositor no longer flips between modes; if the GPU has a problem it stays in a light software mode",
-    "Control Center stays open and shows the colour you picked",
-    "New: summit-diagnose prints a performance and graphics report"
+    "Fixed: changing the accent colour no longer makes the dock and menu bar flash black",
+    "Switching between Light and Dark now flashes at most once, briefly"
   ],
   "apt": {
     "install": [],
