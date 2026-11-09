@@ -17,7 +17,10 @@ def sh(*a, timeout=8):
     except Exception:
         class R: returncode = 1; stdout = ""; stderr = ""
         return R()
-def bg(*a): threading.Thread(target=lambda: sh(*a, timeout=60), daemon=True).start()
+def bg(*a):
+    # fire and forget: the change carries on even if this window closes
+    try: subprocess.Popen(list(a), start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError: pass
 
 # ---- state readers
 def wifi():
@@ -117,7 +120,7 @@ class CC(Gtk.Window):
             if ap.get("accent") == a: b.get_style_context().add_class("selected")
             p = Gtk.CssProvider(); p.load_from_data(f"button {{ background-image:none; background-color:{hx}; min-width:20px; min-height:20px; }}".encode())
             b.get_style_context().add_provider(p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-            b.connect("clicked", lambda _b, a=a: (bg("summit-appearance", "set", f"accent={a}"), self.destroy()))
+            b.connect("clicked", self.pick_accent, a)
             acc.pack_start(b, False, False, 0)
         outer.pack_start(acc, False, False, 0)
 
@@ -143,6 +146,12 @@ class CC(Gtk.Window):
         s.get_style_context().add_class("summit"); s.connect("value-changed", lambda sc: cb(sc.get_value()))
         row.pack_start(s, True, True, 0); box.pack_start(row, False, False, 0)
         return box
+
+    def pick_accent(self, btn, a):
+        for c in btn.get_parent().get_children():
+            if isinstance(c, Gtk.Button): c.get_style_context().remove_class("selected")
+        btn.get_style_context().add_class("selected")
+        bg("summit-appearance", "set", f"accent={a}")
 
     def on_draw(self, w, cr):
         # glass card: the compositor blurs what's behind; we paint a soft translucent fill

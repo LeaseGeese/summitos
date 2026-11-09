@@ -1,12 +1,13 @@
 {
-  "version": "1.22.0",
-  "build": 12200,
-  "restart": "session",
+  "version": "1.22.1",
+  "build": 12201,
+  "restart": "reboot",
   "notes": [
-    "Over-the-air updates: Settings → Software Update",
-    "Live testing installs new changes within about 2 minutes and refreshes the desktop without signing out",
-    "Roll back any update in one click; a failed update restores itself",
-    "Fixed: starting from the drive with Option → EFI Boot could stop at a \"grub>\" prompt"
+    "Changing the accent colour is now quick and smooth: the glass no longer flickers or restarts",
+    "Graphics: switched to the modern Intel driver for smoother, faster drawing (restart once to finish)",
+    "The glass compositor no longer flips between modes; if the GPU has a problem it stays in a light software mode",
+    "Control Center stays open and shows the colour you picked",
+    "New: summit-diagnose prints a performance and graphics report"
   ],
   "apt": {
     "install": [],

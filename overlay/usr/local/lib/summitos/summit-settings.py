@@ -44,9 +44,10 @@ def reload_css():
 
 def set_appearance(**kv):
     args = ["summit-appearance", "set"] + [f"{k}={v}" for k, v in kv.items()]
-    def work():
-        sh(*args, timeout=60); GLib.idle_add(reload_css)
-    threading.Thread(target=work, daemon=True).start()
+    # runs on its own, so a slow change is never cut short (and survives closing Settings)
+    try: p = subprocess.Popen(args, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError: return
+    threading.Thread(target=lambda: (p.wait(), GLib.idle_add(reload_css)), daemon=True).start()
 
 def human(n):
     for unit in ("bytes", "KB", "MB", "GB", "TB"):

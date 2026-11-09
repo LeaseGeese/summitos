@@ -1,27 +1,40 @@
 #!/bin/sh
-# Glass compositor: GPU (glx) with blur. If the GPU path fails (now or later), fall back to
-# software compositing and remember it, so Summit makes glass more solid for readability.
-CONF="$HOME/.config/summit/picom.conf"; FLAG="$HOME/.config/summit/no-gpu-blur"
-LOG="$HOME/.cache/summit-picom.log"; mkdir -p "$HOME/.cache" "$HOME/.config/summit"
+# Glass compositor. Tries the GPU (glx, with blur); if that fails to start or crashes, switches to a
+# light software mode for the rest of this boot, and never flip-flops between the two.
+CFG="$HOME/.config/summit"; CONF="$CFG/picom.conf"; SOFT="$CFG/picom-soft.conf"; FLAG="$CFG/no-gpu-blur"
+LOG="$HOME/.cache/summit-picom.log"; mkdir -p "$HOME/.cache" "$CFG"
 STATE="${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)"; rm -f "$STATE"   # tells apps when compositing has settled
-[ -f "$CONF" ] || summit-appearance write-files >/dev/null 2>&1
+BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+[ -f "$CONF" ] && [ -f "$SOFT" ] || summit-appearance write-files >/dev/null 2>&1
 [ -f "$CONF" ] || CONF=/etc/xdg/picom-summit.conf
+[ -f "$SOFT" ] || SOFT="$CONF"
+# keep the log small
+[ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ] && tail -c 50000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 pkill -u "$(id -u)" -x picom 2>/dev/null; sleep 0.3
 
-fallback() {
+software() {
   echo software > "$STATE"
-  if [ ! -f "$FLAG" ]; then touch "$FLAG"; (sleep 2; summit-appearance refresh-glass >/dev/null 2>&1) & fi
-  # software mode: no blur, and square corners (rounding opaque windows in software paints the corners black)
-  exec picom --config "$CONF" --backend xrender --no-vsync --blur-method none --corner-radius 0 2>>"$LOG"
+  # remember for this boot (glass becomes more solid so text stays readable)
+  if [ "$(cat "$FLAG" 2>/dev/null)" != "$BOOT" ]; then
+    echo "$BOOT" > "$FLAG"; (sleep 2; summit-appearance refresh-glass >/dev/null 2>&1) &
+  fi
+  echo "$(date '+%F %T') software mode ($1)" >> "$LOG"
+  exec picom --config "$SOFT" --backend xrender 2>>"$LOG"
 }
 
-[ -f "$FLAG.forced" ] && fallback           # user/admin can force software mode
+[ -f "$FLAG.forced" ] && software "forced"
+# GPU already failed during this boot: don't retry until the next restart
+[ -n "$BOOT" ] && [ "$(cat "$FLAG" 2>/dev/null)" = "$BOOT" ] && software "GPU failed earlier this boot"
+
 picom --config "$CONF" 2>>"$LOG" &
 PID=$!
 sleep 4
-kill -0 "$PID" 2>/dev/null || fallback       # GPU path failed to start
+kill -0 "$PID" 2>/dev/null || software "GPU compositor didn't start"
 echo gpu > "$STATE"
-if [ -f "$FLAG" ]; then rm -f "$FLAG"; (summit-appearance refresh-glass >/dev/null 2>&1) & fi
+# blur works: if a previous boot fell back, give the glass back (only once it has proved stable)
+if [ -f "$FLAG" ]; then
+  ( sleep 60; kill -0 "$PID" 2>/dev/null && rm -f "$FLAG" && summit-appearance refresh-glass >/dev/null 2>&1 ) &
+fi
 wait "$PID"; rc=$?
 case "$rc" in 0|137|143) exit 0 ;; esac     # stopped on purpose (restart, logout)
-fallback                                      # crashed later: switch to software mode
+software "GPU compositor crashed (exit $rc)"
