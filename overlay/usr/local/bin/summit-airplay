@@ -1,0 +1,125 @@
+#!/usr/bin/python3
+"""summit-airplay: Summit OS's AirPlay receiver (UxPlay), tuned for low lag and supervised.
+
+- Low lag: the iMac's GPU decodes the stream (hardware H.264), video is shown the moment it arrives
+  instead of being held back to line up with audio timestamps, and the Mac is asked for 60 frames per
+  second at this display's resolution.
+- Never stuck: when the Mac stops mirroring, the video window closes within a few seconds (some macOS
+  versions keep the connection open after "Stop Mirroring", which used to leave a frozen picture
+  full-screen). If the receiver ever stops or crashes, it starts again by itself.
+- If the hardware decoder can't be used on this machine, it falls back to software decoding.
+
+Started by `summit-connect-agent airplay`; stopped by `summit-connect-agent stop-airplay`.
+"""
+import os, sys, time, signal, socket, subprocess, glob
+
+NAME = socket.gethostname()
+MIRROR_PORT = 7100            # with -p (legacy ports), the screen stream is a TCP connection to this port
+LOG = os.path.join(os.path.expanduser("~"), ".cache", "summit-airplay.log")
+
+def screen_size():
+    try:
+        out = subprocess.run(["xrandr", "--current"], capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            if "*" in line:
+                w, h = line.split()[0].split("x"); return int(w), int(h)
+    except Exception:
+        pass
+    return 1920, 1080
+
+def hardware_decode_possible():
+    return bool(glob.glob("/dev/dri/renderD*")) and any(os.path.exists(p) for p in (
+        "/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstva.so", "/usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstva.so"))
+
+def command(hw):
+    w, h = screen_size()
+    cmd = ["uxplay", "-n", NAME, "-nh", "-p",
+           "-s", f"{w}x{h}@60", "-fps", "60" if hw else "30",
+           "-vsync", "no",            # show each frame at once (the default holds video back to match audio)
+           "-al", "0.15",             # tell the Mac to keep less audio buffered
+           "-reset", "2",             # drop a client that has gone silent after 6 s (default 15 s)
+           "-nohold",                 # a new Mac can take over the screen right away
+           "-fs"]
+    if hw: cmd += ["-vd", "vah264dec", "-vs", "glimagesink"]
+    else:  cmd += ["-avdec"]
+    return cmd
+
+def mirroring():
+    """Is a Mac currently streaming its screen? (an established TCP connection on the mirror port)"""
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as f:
+                next(f)
+                for line in f:
+                    parts = line.split()
+                    if int(parts[1].rsplit(":", 1)[1], 16) == MIRROR_PORT and parts[3] == "01":
+                        return True
+        except (OSError, StopIteration, IndexError, ValueError):
+            pass
+    return False
+
+def log(msg):
+    try:
+        with open(LOG, "a") as f: f.write(time.strftime("%F %T ") + msg + "\n")
+    except OSError:
+        pass
+
+def main():
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    try:
+        if os.path.getsize(LOG) > 200000: os.remove(LOG)
+    except OSError:
+        pass
+    subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "uxplay"], capture_output=True)
+    hw = {"1": True, "0": False}.get(os.environ.get("SUMMIT_AIRPLAY_HW", ""), hardware_decode_possible())
+    proc = None
+    stop = {"now": False}
+    def quit_(*_):
+        stop["now"] = True
+        if proc and proc.poll() is None: proc.terminate()
+    signal.signal(signal.SIGTERM, quit_); signal.signal(signal.SIGINT, quit_)
+
+    quick_fails = 0
+    while not stop["now"]:
+        cmd = command(hw)
+        log(("hardware" if hw else "software") + " decoding: " + " ".join(cmd))
+        started = time.monotonic()
+        env = dict(os.environ, GST_VA_ALL_DRIVERS="1")     # let GStreamer use the older Intel video driver too
+        with open(LOG, "a") as out:
+            proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, env=env)
+        was_mirroring = False; quiet_since = None
+        while proc.poll() is None and not stop["now"]:
+            time.sleep(0.5)
+            now = mirroring()
+            if now:
+                was_mirroring = True; quiet_since = None
+            elif was_mirroring:
+                quiet_since = quiet_since or time.monotonic()
+                if time.monotonic() - quiet_since > 3:
+                    # the Mac stopped mirroring but the picture may still be up: start fresh (takes a second)
+                    log("mirroring ended: closing the video window")
+                    proc.terminate()
+                    try: proc.wait(5)
+                    except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+                    break
+        if stop["now"]: break
+        rc = proc.poll()
+        if rc not in (None, 0, -15) and hw:
+            # it didn't stop because we asked it to: the hardware decoder isn't working on this machine
+            log(f"receiver stopped (exit {rc}) with hardware decoding: using software decoding")
+            hw = False; time.sleep(1); continue
+        if rc not in (None, 0, -15) and time.monotonic() - started < 10:
+            quick_fails += 1
+            if quick_fails > 5:
+                log("receiver keeps failing to start; giving up until next login"); break
+            time.sleep(2)
+        else:
+            quick_fails = 0
+            time.sleep(1)
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try: proc.wait(5)
+        except subprocess.TimeoutExpired: proc.kill()
+
+if __name__ == "__main__":
+    main()

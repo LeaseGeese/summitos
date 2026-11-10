@@ -5,14 +5,19 @@ case "$1" in
   screen)
     [ -f "$HOME/.vnc/passwd" ] || exit 1
     pkill -u "$(id -u)" -x x11vnc 2>/dev/null
+    # -threads: encode on both cores; -wait/-defer 10: check for changes and send them twice as often;
+    # -nowf: move windows in real time instead of as outlines; -noxrecord: less overhead per keystroke
     x11vnc -display "${DISPLAY:-:0}" -rfbauth "$HOME/.vnc/passwd" -rfbport 5900 \
-           -forever -shared -noxdamage -repeat -nopw -quiet -bg -o "$HOME/.cache/summit-x11vnc.log"
+           -forever -shared -noxdamage -repeat -nopw -quiet -threads -wait 10 -defer 10 -nowf -noxrecord \
+           -bg -o "$HOME/.cache/summit-x11vnc.log"
     exec avahi-publish -s "$NAME" _rfb._tcp 5900 ;;
   airplay)
+    pkill -u "$(id -u)" -f "^/usr/bin/python3 /usr/local/bin/summit-airplay" 2>/dev/null
     pkill -u "$(id -u)" -x uxplay 2>/dev/null
-    exec uxplay -n "$NAME" -nh -fs -p ;;
+    exec summit-airplay ;;                        # tuned, supervised UxPlay (see summit-airplay)
   stop-screen)
     pkill -u "$(id -u)" -x x11vnc; pkill -u "$(id -u)" -f "avahi-publish -s .* _rfb._tcp" ;;
   stop-airplay)
+    pkill -u "$(id -u)" -f "^/usr/bin/python3 /usr/local/bin/summit-airplay"; sleep 0.5
     pkill -u "$(id -u)" -x uxplay ;;
 esac

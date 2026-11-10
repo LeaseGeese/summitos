@@ -1,9 +1,11 @@
 {
-  "version": "1.23.1",
-  "build": 12301,
+  "version": "1.23.2",
+  "build": 12302,
   "restart": "session",
   "notes": [
-    "Faster disk: USB SSDs that wrongly report themselves as hard drives (like the SSK Portable SSD) now get SSD settings, found by timing the drive at startup"
+    "AirPlay is much smoother: the iMac's graphics chip decodes the stream, frames show the moment they arrive, and your Mac can send 60 frames per second",
+    "Fixed: stopping AirPlay on your Mac no longer leaves a frozen picture on the iMac; the receiver also restarts by itself if it ever stops",
+    "Screen Sharing updates faster and moves windows smoothly"
   ],
   "apt": {
     "install": [

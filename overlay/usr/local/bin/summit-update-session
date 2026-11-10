@@ -62,6 +62,12 @@ if [ "$1" != "--login" ] && [ -n "$DISPLAY" ]; then
     for i in $(seq 1 60); do [ -s "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)" ] && break; sleep 0.25; done
     restart plank -x; launch plank
   fi
+  if touched 'usr/local/bin/summit-airplay' 'usr/local/bin/summit-connect-agent' && [ -f "$HOME/.config/autostart/summit-airplay.desktop" ]; then
+    summit-connect-agent stop-airplay; launch summit-connect-agent airplay   # new AirPlay receiver (also clears a stuck picture)
+  fi
+  if touched 'usr/local/bin/summit-connect-agent' && [ -f "$HOME/.config/autostart/summit-screen-sharing.desktop" ]; then
+    summit-connect-agent stop-screen; launch summit-connect-agent screen        # Screen Sharing with the new settings
+  fi
   if touched 'usr/local/bin/summit-shell*' 'usr/local/bin/summit-control-center' 'usr/local/bin/summit-appearance' 'usr/local/bin/summit-transition' 'usr/local/lib/summitos/summit_look.py' 'usr/share/icons/*' 'usr/share/applications/*'; then
     restart bin/summit-shell -f; launch summit-shell      # Spotlight, Launchpad, Control Center
   fi
