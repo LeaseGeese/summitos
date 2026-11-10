@@ -7,6 +7,8 @@ systemctl --global enable summit-update-watch.path >/dev/null 2>&1 || true
 # performance tuning at every start (CPU and GPU clock floors on older Intel chips)
 systemctl enable summit-tune.service >/dev/null 2>&1 || true
 systemctl start summit-tune.service >/dev/null 2>&1 || true
+# the startup disk turned out to be an SSD: the app preloader only wastes memory there
+/usr/local/lib/summitos/root-is-rotational || systemctl stop preload.service >/dev/null 2>&1 || true
 # fully preemptible kernel: the desktop stays responsive while something heavy runs (applies after restart)
 if [ "${SUMMIT_LIVE:-0}" != 1 ] && [ -f /boot/grub/grub.cfg ] && ! grep -q "preempt=full" /boot/grub/grub.cfg; then
   update-grub >/dev/null 2>&1 || true

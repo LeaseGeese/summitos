@@ -1,6 +1,8 @@
 [Unit]
 Description=Summit OS performance tuning
-After=systemd-modules-load.service
+After=systemd-modules-load.service systemd-udev-settle.service local-fs.target
+# disk settings must be right before the app preloader decides whether to run
+Before=preload.service
 
 [Service]
 Type=oneshot

@@ -1,0 +1,39 @@
+#!/usr/bin/python3
+"""Find SSDs that claim to be spinning hard drives (common with USB enclosures) by timing random reads.
+An SSD answers a random 4 KB read in well under a millisecond; a hard drive needs 5-15 ms to move its head.
+Prints the disks it corrected. Run by summit-tune at startup; reads a few KB, writes nothing to the disks."""
+import os, mmap, random, time, glob, sys
+
+def random_read_ms(dev, reads=24):
+    fd = os.open(dev, os.O_RDONLY | os.O_DIRECT)
+    try:
+        size = os.lseek(fd, 0, os.SEEK_END)
+        if size < 1 << 30: return None
+        buf = mmap.mmap(-1, 4096)                      # page-aligned, as direct reads need
+        os.preadv(fd, [buf], 0)                        # wake the drive first (a sleeping disk would skew the timing)
+        rng = random.Random(42); times = []
+        for _ in range(reads):
+            off = rng.randrange(0, size // 4096) * 4096
+            t = time.perf_counter(); os.preadv(fd, [buf], off); times.append(time.perf_counter() - t)
+        times.sort()
+        return times[len(times) // 2] * 1000           # median, so one slow read can't fool it
+    finally:
+        os.close(fd)
+
+fixed = []
+for q in glob.glob("/sys/block/sd*/queue/rotational"):
+    name = q.split("/")[3]
+    try:
+        if open(q).read().strip() != "1": continue
+        ms = random_read_ms(f"/dev/{name}")
+    except OSError:
+        continue
+    if ms is not None and ms < 3.0:            # hard drives need 8 ms or more; slow USB bridges still stay under 3
+        base = f"/sys/block/{name}/queue"
+        for attr, val in (("rotational", "0"), ("scheduler", "mq-deadline"), ("read_ahead_kb", "256")):
+            try:
+                with open(f"{base}/{attr}", "w") as f: f.write(val)
+            except OSError:
+                pass
+        fixed.append(f"{name} ({ms:.2f} ms per random read: SSD)")
+if fixed: print("treated as SSD: " + ", ".join(fixed))

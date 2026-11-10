@@ -2,6 +2,10 @@
 # Summit OS performance tuning, run once at startup. Each change is small, safe, and only applied
 # on hardware it suits; everything resets by itself at the next boot.
 
+# Disks: USB enclosures often report an SSD as a spinning hard drive, which gets the slower hard-drive
+# settings (and the app preloader). Time a few random reads and correct any SSD found that way.
+/usr/local/lib/summitos/disk-speed-check 2>/dev/null || true
+
 # CPU: older Intel chips (no hardware P-states, e.g. the 2014 iMac's Haswell) start each burst of work
 # at their lowest clock and step up slowly, which feels like lag. Keep a floor near the base clock;
 # when idle the CPU still sleeps as deeply as before.

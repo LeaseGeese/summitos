@@ -4,6 +4,8 @@
 ACTION=="add|change", KERNEL=="sd[a-z]", ENV{ID_BUS}=="usb", ATTR{queue/rotational}=="1", ATTR{queue/discard_max_bytes}!="0", ATTR{queue/rotational}="0"
 # ...or the model name says it is an SSD (Samsung T5/T7/T9, SanDisk Extreme, anything "SSD")
 ACTION=="add|change", KERNEL=="sd[a-z]", ENV{ID_BUS}=="usb", ATTR{queue/rotational}=="1", ENV{ID_MODEL}=="*SSD*|*Ssd*|*ssd*|*T5*|*T7*|*T9*|*Extreme*", ATTR{queue/rotational}="0"
+ACTION=="add|change", KERNEL=="sd[a-z]", ENV{ID_BUS}=="usb", ATTR{queue/rotational}=="1", ATTRS{model}=="*SSD*|*Ssd*|*ssd*", ATTR{queue/rotational}="0"
+# (anything still missed is caught at startup by timing random reads: see /usr/local/lib/summitos/disk-speed-check)
 # Spinning hard drive -> BFQ (keeps the desktop responsive during heavy disk use)
 #                        + bigger read-ahead for faster app launches.
 ACTION=="add|change", KERNEL=="sd[a-z]|vd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq", ATTR{queue/read_ahead_kb}="2048", ATTR{queue/iosched/low_latency}="1"
