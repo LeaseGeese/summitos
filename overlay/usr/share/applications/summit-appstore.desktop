@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=App Store
+GenericName=Software
+Comment=Find and install apps: Chrome, Spotify, Discord, Zoom, VS Code, Steam and thousands more
+Exec=summit-appstore
+Icon=summit-appstore
+Terminal=false
+Categories=System;PackageManager;
+Keywords=apps;install;software;store;download;flatpak;flathub;windows;exe;bottles;
+StartupNotify=true
+StartupWMClass=summit-appstore

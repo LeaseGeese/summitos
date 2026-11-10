@@ -4,7 +4,7 @@
 import os, sys, json, socket, subprocess, threading, shutil, re, time
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, GLib, GdkPixbuf, Pango
+from gi.repository import Gtk, Gdk, GLib, GdkPixbuf, Pango, Gio
 
 HOME = os.path.expanduser("~")
 USER = os.environ.get("USER") or os.getlogin()
@@ -28,9 +28,9 @@ def sh(*a, **kw):
         class R: returncode = 1; stdout = ""; stderr = str(e)
         return R()
 
+import summit_look                      # /usr/local/lib/summitos/summit_look.py, next to this file
 def appearance():
-    try: return json.loads(sh("summit-appearance", "get").stdout)
-    except ValueError: return {}
+    return summit_look.get()
 
 _live_css = None
 def reload_css():
@@ -45,11 +45,16 @@ def reload_css():
     return False
 
 def set_appearance(**kv):
-    args = ["summit-appearance", "set"] + [f"{k}={v}" for k, v in kv.items()]
-    # runs on its own, so a slow change is never cut short (and survives closing Settings)
-    try: p = subprocess.Popen(args, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except OSError: return
-    threading.Thread(target=lambda: (p.wait(), GLib.idle_add(reload_css)), daemon=True).start()
+    # summit-shell applies it (instantly, behind a crossfade); this window follows the new colours
+    # when the generated stylesheet changes (see watch_css)
+    summit_look.set(**kv)
+
+_css_mon = None
+def watch_css():
+    global _css_mon
+    f = Gio.File.new_for_path(os.path.join(HOME, ".config", "gtk-3.0", "summit.css"))
+    _css_mon = f.monitor_file(Gio.FileMonitorFlags.NONE, None)
+    _css_mon.connect("changed", lambda *_: GLib.timeout_add(150, reload_css))
 
 def human(n):
     for unit in ("bytes", "KB", "MB", "GB", "TB"):
@@ -790,6 +795,7 @@ def main():
     else:
         page = args[args.index("--page") + 1] if "--page" in args and len(args) > args.index("--page") + 1 else "appearance"
         w = Settings(page)
+    watch_css()
     w.connect("destroy", Gtk.main_quit); w.show_all(); Gtk.main()
 
 if __name__ == "__main__":

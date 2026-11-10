@@ -40,7 +40,11 @@ static gboolean is_panel (void)
 G_MODULE_EXPORT void gtk_module_init (gint *argc, gchar ***argv)
 {
     if (!is_panel ()) return;
-    g_signal_add_emission_hook (g_signal_lookup ("map", GTK_TYPE_WIDGET), 0, on_map, NULL, NULL);
+    /* at startup GTK hasn't created its widget classes yet, so their signals don't exist: create the class first */
+    gpointer klass = g_type_class_ref (GTK_TYPE_WIDGET);
+    guint sig = g_signal_lookup ("map", GTK_TYPE_WIDGET);
+    if (sig) g_signal_add_emission_hook (sig, 0, on_map, NULL, NULL);
+    g_type_class_unref (klass);
     GList *wins = gtk_window_list_toplevels ();            /* when loaded into an already running panel */
     for (GList *l = wins; l; l = l->next) watch (l->data);
     g_list_free (wins);

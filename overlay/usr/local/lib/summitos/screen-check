@@ -1,0 +1,20 @@
+#!/usr/bin/python3
+"""Exit 1 if the composited screen looks broken (a large share of it pure black), else 0.
+summit-compositor runs this a few seconds after starting the GPU compositor: some graphics stacks start
+fine but draw nothing, and that can't be seen any other way."""
+import os, sys, warnings
+os.environ.setdefault("NO_AT_BRIDGE", "1"); warnings.filterwarnings("ignore")
+import gi
+gi.require_version("Gdk", "3.0"); gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gdk, GdkPixbuf
+root = Gdk.get_default_root_window()
+if root is None: sys.exit(0)
+pb = Gdk.pixbuf_get_from_window(root, 0, 0, root.get_width(), root.get_height())
+if pb is None: sys.exit(0)
+small = pb.scale_simple(160, 90, GdkPixbuf.InterpType.NEAREST)    # nearest: keeps exact black as black
+data, n, stride = small.get_pixels(), small.get_n_channels(), small.get_rowstride()
+black = sum(1 for y in range(90) for x in range(160)
+            if data[y * stride + x * n] == 0 and data[y * stride + x * n + 1] == 0 and data[y * stride + x * n + 2] == 0)
+share = black / (160 * 90)
+print(f"black {share:.0%}")
+sys.exit(1 if share > float(os.environ.get("SUMMIT_BLACK_LIMIT", "0.10")) else 0)

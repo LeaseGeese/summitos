@@ -1,15 +1,18 @@
 {
-  "version": "1.22.3",
-  "build": 12203,
+  "version": "1.23.0",
+  "build": 12300,
   "restart": "session",
   "notes": [
-    "New nature wallpapers: Peaks, Alpine Lake, Coast, Dunes, Forest and Meadow, each with a day and a night version",
-    "Switching Light and Dark (and accent colours) now crossfades smoothly instead of flashing",
-    "Refined text: crisper, smoother Inter with clearer I, l and 1 (looks its best after your next restart)",
-    "The menu bar no longer underlines the first letter of each menu"
+    "New App Store: install Chrome, Spotify, Discord, Zoom, VS Code, Steam and thousands more from Flathub, plus Bottles for Windows apps",
+    "Smoother and faster: macOS-style window animations, instant Light/Dark and accent switching, Control Center opens instantly",
+    "Tuned for older Intel Macs: snappier CPU and graphics response, hardware video decoding, a more responsive kernel (after restart)"
   ],
   "apt": {
-    "install": [],
+    "install": [
+      "flatpak",
+      "xdg-desktop-portal",
+      "xdg-desktop-portal-gtk"
+    ],
     "remove": []
   }
 }

@@ -8,4 +8,4 @@ position='bottom'
 alignment='center'
 show-dock-item=false
 pressure-reveal=false
-dock-items=['finder.dockitem', 'launchpad.dockitem', 'browser.dockitem', 'terminal.dockitem', 'textedit.dockitem', 'calculator.dockitem', 'monitor.dockitem', 'settings.dockitem', 'trash.dockitem']
+dock-items=['finder.dockitem', 'launchpad.dockitem', 'appstore.dockitem', 'browser.dockitem', 'terminal.dockitem', 'textedit.dockitem', 'calculator.dockitem', 'monitor.dockitem', 'settings.dockitem', 'trash.dockitem']

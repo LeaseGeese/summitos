@@ -1,0 +1,14 @@
+# Summit OS: hardware video decoding on older Intel graphics (Ivy Bridge / Haswell, like the 2014 iMac).
+# Their video engine uses the "i965" driver; naming it skips a failed probe of the newer driver, and
+# ranking the hardware H.264/MPEG-2/VC-1 decoders first makes videos play on the GPU instead of the CPU.
+# (This file is read with "stop on any error", so every step here must succeed.)
+summit_gpu=""
+if [ -r /sys/class/drm/card0/device/vendor ] && [ -r /sys/class/drm/card0/device/device ]; then
+  summit_gpu="$(cat /sys/class/drm/card0/device/vendor 2>/dev/null || true):$(cat /sys/class/drm/card0/device/device 2>/dev/null || true)"
+fi
+case "$summit_gpu" in
+  0x8086:0x04*|0x8086:0x0a*|0x8086:0x0c*|0x8086:0x0d*|0x8086:0x015*|0x8086:0x016*)
+    if [ -e /usr/lib/x86_64-linux-gnu/dri/i965_drv_video.so ]; then export LIBVA_DRIVER_NAME=i965; fi ;;
+esac
+unset summit_gpu
+export GST_PLUGIN_FEATURE_RANK="vah264dec:258,vampeg2dec:258,vavc1dec:258${GST_PLUGIN_FEATURE_RANK:+,$GST_PLUGIN_FEATURE_RANK}"

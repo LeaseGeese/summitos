@@ -57,7 +57,7 @@ python3 /usr/local/lib/summitos/make-icon-themes
 for t in /usr/share/icons/Summit-* /usr/share/icons/hicolor; do gtk-update-icon-cache -q -f "$t" || true; done
 dconf update; update-desktop-database -q /usr/share/applications || true
 plymouth-set-default-theme summit || true
-systemctl enable mbpfan zramswap NetworkManager lightdm avahi-daemon earlyoom summit-update.timer 2>/dev/null || true
+systemctl enable mbpfan zramswap NetworkManager lightdm avahi-daemon earlyoom summit-update.timer summit-tune.service 2>/dev/null || true
 systemctl disable smbd ssh ssh.socket NetworkManager-wait-online.service motd-news.timer e2scrub_all.timer smartmontools udisks2 2>/dev/null || true
 systemctl --global enable summit-update-watch.path 2>/dev/null || true
 echo applesmc >> /etc/modules

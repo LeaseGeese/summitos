@@ -5,26 +5,28 @@ Takes a snapshot of the screen and shows it on top of everything, so the dock, m
 wallpaper can all switch underneath without anyone seeing them change one by one. Then it fades the
 snapshot away. Clicks pass straight through it.
 
+summit-shell uses the Crossfade class directly (no extra process, so it starts instantly). As a command:
+
   summit-transition [--expect panel,dock,desktop]
 
-Protocol (used by summit-appearance): prints "ready" once the snapshot is on screen, then waits for a
-line on stdin (or end of input). It then watches the menu bar, dock and desktop windows underneath and
-fades out once the ones listed in --expect have repainted and nothing has changed for a moment.
-It never holds the screen longer than a few seconds.
+prints "ready" once the snapshot is on screen, then waits for a line on stdin (or end of input).
+Either way it then watches the menu bar, dock and desktop windows underneath and fades out once the
+ones listed in `expect` have repainted and nothing has changed for a moment, and never holds the
+screen longer than a few seconds.
 """
 import os, sys, threading, time, warnings, subprocess, zlib
-os.environ.setdefault("NO_AT_BRIDGE", "1")          # skip the accessibility bus: starts faster
+os.environ.setdefault("NO_AT_BRIDGE", "1")
 warnings.filterwarnings("ignore")
 import gi
 gi.require_version("Gtk", "3.0"); gi.require_version("Gdk", "3.0"); gi.require_version("GdkX11", "3.0")
 from gi.repository import Gtk, Gdk, GLib, GdkX11
 import cairo
 
-MIN_HOLD_MS = int(os.environ.get("SUMMIT_TRANSITION_HOLD", "250"))
-MAX_HOLD_MS = int(os.environ.get("SUMMIT_TRANSITION_MAX", "3000"))   # never freeze the screen longer than this
-STABLE_MS = int(os.environ.get("SUMMIT_TRANSITION_STABLE", "400"))            # the screen counts as settled once nothing has changed for this long
-FADE_MS = int(os.environ.get("SUMMIT_TRANSITION_FADE", "320"))
-MAX_WAIT_S = 10
+MIN_HOLD_MS = int(os.environ.get("SUMMIT_TRANSITION_HOLD", "120"))
+MAX_HOLD_MS = int(os.environ.get("SUMMIT_TRANSITION_MAX", "2500"))   # never freeze the screen longer than this
+STABLE_MS = int(os.environ.get("SUMMIT_TRANSITION_STABLE", "250"))   # settled once nothing changed for this long
+FADE_MS = int(os.environ.get("SUMMIT_TRANSITION_FADE", "260"))
+POLL_MS = 60
 LOG = os.environ.get("SUMMIT_TRANSITION_LOG")       # for testing: when each phase happened
 CLASSES = {"panel": "xfce4-panel.Xfce4-panel", "dock": "plank.Plank", "desktop": "xfdesktop.Xfdesktop"}
 
@@ -50,14 +52,15 @@ def find_windows():
 class Watch:
     """Fingerprints of what the menu bar, dock and desktop windows show. Each window is read on its own
     (not through the screen), so the snapshot on top doesn't get in the way."""
-    def __init__(self, display):
-        self.display = display; self.wins = {}; self.xids = {}
+    def __init__(self, display, names):
+        self.display = display; self.names = set(names); self.wins = {}; self.xids = {}
         self.refresh()
         self.first = self.sample(); self.last = dict(self.first); self.changed_at = time.monotonic()
 
     def refresh(self):
+        if not self.names: return
         for name, xid in find_windows().items():
-            if self.xids.get(name) == xid: continue
+            if name not in self.names or self.xids.get(name) == xid: continue
             try:
                 self.wins[name] = GdkX11.X11Window.foreign_new_for_display(self.display, xid); self.xids[name] = xid
             except Exception:
@@ -78,11 +81,10 @@ class Watch:
                 sig[name] = None
         return sig
 
-    def poll(self):
-        self.refresh()                           # a restarted menu bar comes back as a new window
+    def poll(self, refresh=False):
+        if refresh: self.refresh()              # a restarted menu bar comes back as a new window
         now = self.sample()
         if now != self.last: self.changed_at = time.monotonic(); self.last = now
-        return now
 
     def repainted(self, name):
         return name not in self.wins or self.last.get(name) != self.first.get(name)
@@ -90,83 +92,91 @@ class Watch:
     def stable_ms(self):
         return (time.monotonic() - self.changed_at) * 1000
 
+class Crossfade:
+    """Freeze the screen under a snapshot; call go() once the change has been applied.
+    on_ready() runs when the snapshot is on screen, on_done() when it has faded away."""
+    def __init__(self, expect=(), on_ready=None, on_done=None):
+        self.expect = [e for e in expect if e in CLASSES]
+        self.on_ready, self.on_done = on_ready, on_done
+        self.state = "new"; self.win = None
+        display = Gdk.Display.get_default()
+        root = Gdk.get_default_root_window()
+        w, h = root.get_width(), root.get_height()
+        self.watch = Watch(display, CLASSES)
+        shot = Gdk.pixbuf_get_from_window(root, 0, 0, w, h)
+        if shot is None:
+            self.state = "failed"; GLib.idle_add(self._ready); return
+        win = Gtk.Window(type=Gtk.WindowType.POPUP)
+        win.set_title("Summit transition"); win.set_wmclass("summit-transition", "Summit-transition")
+        win.set_app_paintable(True); win.set_decorated(False); win.set_accept_focus(False)
+        win.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        visual = win.get_screen().get_rgba_visual()
+        if visual is not None: win.set_visual(visual)
+        win.move(0, 0); win.set_default_size(w, h); win.resize(w, h)
+        def draw(_w, cr):
+            Gdk.cairo_set_source_pixbuf(cr, shot, 0, 0); cr.set_operator(cairo.OPERATOR_SOURCE); cr.paint()
+            return True
+        win.connect("draw", draw)
+        def on_map(*_):
+            win.input_shape_combine_region(cairo.Region())     # clicks go to whatever is underneath
+            GLib.timeout_add(40, self._ready)                  # let the compositor put the frame on screen
+        win.connect("map-event", on_map)
+        self.win = win; self.state = "showing"
+        GLib.timeout_add(1500, self._ready)                   # never wait forever for the map
+        win.show_all()
+
+    def _ready(self):
+        if self.state in ("showing", "failed"):
+            failed = self.state == "failed"
+            self.state = "ready"; log("ready")
+            if self.on_ready: self.on_ready()
+            if failed: self._finish()
+        return False
+
+    def go(self):
+        """The change has been applied: wait for it to show, then fade."""
+        if self.state != "ready": return
+        self.state = "settling"; log("go"); self.since = time.monotonic(); self.polls = 0
+        GLib.timeout_add(POLL_MS, self._settle)
+
+    def _settle(self):
+        held = (time.monotonic() - self.since) * 1000
+        self.polls += 1
+        self.watch.poll(refresh=self.polls % 5 == 0)
+        done = all(self.watch.repainted(e) for e in self.expect) and self.watch.stable_ms() >= STABLE_MS
+        if (held >= MIN_HOLD_MS and done) or held >= MAX_HOLD_MS:
+            log("settled" if done else "timeout")
+            self.state = "fading"; self.t0 = time.monotonic(); log("fade")
+            GLib.timeout_add(16, self._fade)
+            return False
+        return True
+
+    def _fade(self):
+        t = (time.monotonic() - self.t0) * 1000 / max(FADE_MS, 1)
+        if t >= 1:
+            self._finish(); return False
+        e = 1 - (1 - t) ** 3                    # ease out
+        self.win.set_opacity(max(0.0, 1 - e))
+        return True
+
+    def _finish(self):
+        log("done"); self.state = "done"
+        if self.win is not None: self.win.destroy(); self.win = None
+        if self.on_done: self.on_done()
+
 def main(argv):
     expect = []
     if "--expect" in argv:
         i = argv.index("--expect")
-        if i + 1 < len(argv): expect = [e for e in argv[i + 1].split(",") if e in CLASSES]
-
+        if i + 1 < len(argv): expect = argv[i + 1].split(",")
     Gdk.set_program_class("Summit-transition")
-    display = Gdk.Display.get_default()
-    root = Gdk.get_default_root_window()
-    w, h = root.get_width(), root.get_height()
-    watch = Watch(display)
-    shot = Gdk.pixbuf_get_from_window(root, 0, 0, w, h)
-    if shot is None:
-        print("fail", flush=True); return 1
-
-    win = Gtk.Window(type=Gtk.WindowType.POPUP)
-    win.set_title("Summit transition"); win.set_wmclass("summit-transition", "Summit-transition")
-    win.set_app_paintable(True); win.set_decorated(False); win.set_accept_focus(False)
-    win.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
-    visual = win.get_screen().get_rgba_visual()
-    if visual is not None: win.set_visual(visual)
-    win.move(0, 0); win.set_default_size(w, h); win.resize(w, h)
-
-    def draw(_w, cr):
-        Gdk.cairo_set_source_pixbuf(cr, shot, 0, 0); cr.set_operator(cairo.OPERATOR_SOURCE); cr.paint()
-        return True
-    win.connect("draw", draw)
-
-    state = {"ready": False, "go": False, "t0": None}
-
-    def on_map(*_):
-        win.input_shape_combine_region(cairo.Region())     # clicks go to whatever is underneath
-        # wait for the compositor to put the first frame on screen before saying we're ready
-        def ready():
-            if not state["ready"]:
-                state["ready"] = True
-                print("ready", flush=True); log("ready")
-            return False
-        GLib.timeout_add(60, ready)
-    win.connect("map-event", on_map)
-
+    cf = Crossfade(expect, on_ready=lambda: print("ready", flush=True), on_done=Gtk.main_quit)
     def wait_stdin():
         try: sys.stdin.readline()
         except Exception: pass
-        GLib.idle_add(start_fade)
+        GLib.idle_add(lambda: (cf.go(), False)[1])
     threading.Thread(target=wait_stdin, daemon=True).start()
-    GLib.timeout_add_seconds(MAX_WAIT_S, lambda: (start_fade(), False)[1])
-
-    def start_fade():
-        if state["go"]: return False
-        state["go"] = True; log("go")
-        state["since"] = time.monotonic()
-        GLib.timeout_add(80, settle)
-        return False
-
-    def settle():
-        held = (time.monotonic() - state["since"]) * 1000
-        watch.poll()
-        done = all(watch.repainted(e) for e in expect) and watch.stable_ms() >= STABLE_MS
-        if (held >= MIN_HOLD_MS and done) or held >= MAX_HOLD_MS:
-            log("settled" if done else "timeout"); fade_begin(); return False
-        return True
-
-    def fade_begin():
-        log("fade"); state["t0"] = time.monotonic()
-        GLib.timeout_add(16, fade_step)
-        return False
-
-    def fade_step():
-        t = (time.monotonic() - state["t0"]) * 1000 / max(FADE_MS, 1)
-        if t >= 1:
-            log("done"); Gtk.main_quit(); return False
-        e = 1 - (1 - t) ** 3                    # ease out
-        win.set_opacity(max(0.0, 1 - e))
-        return True
-
-    win.show_all()
+    GLib.timeout_add_seconds(10, lambda: (cf.go(), False)[1])
     Gtk.main()
     return 0
 

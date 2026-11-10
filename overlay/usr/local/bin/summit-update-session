@@ -3,6 +3,7 @@
 # applies per-user changes, refreshes only the parts of the desktop the update touched,
 # and tells you what changed.
 D=/var/lib/summit-update
+export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-x11}" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-XFCE}"   # the dock checks these
 SEEN="$HOME/.config/summit/update-seen"
 mkdir -p "$HOME/.config/summit"
 # one run at a time: a second trigger waits, then finds the update already handled
@@ -53,7 +54,15 @@ if [ "$1" != "--login" ] && [ -n "$DISPLAY" ]; then
   if touched 'usr/local/bin/summit-appearance' 'usr/share/themes/*' 'usr/share/icons/*' 'etc/xdg/picom*' 'usr/local/bin/summit-compositor'; then
     summit-appearance apply >/dev/null 2>&1 9>&-                              # styles, colours, compositor
   fi
-  if touched 'usr/local/bin/summit-shell*' 'usr/local/bin/summit-control-center' 'usr/share/icons/*' 'usr/share/applications/*'; then
+  if touched 'usr/local/bin/summit-compositor' 'usr/local/lib/summitos/picom' 'usr/local/lib/summitos/screen-check'; then
+    pkill -u "$(id -u)" -x summit-composit; pkill -u "$(id -u)" -x picom
+    rm -f "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)"
+    launch summit-compositor                            # new compositor (and its animations) right away
+    # the dock only draws properly if compositing is up when it starts: wait for the compositor, then restart it
+    for i in $(seq 1 60); do [ -s "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)" ] && break; sleep 0.25; done
+    restart plank -x; launch plank
+  fi
+  if touched 'usr/local/bin/summit-shell*' 'usr/local/bin/summit-control-center' 'usr/local/bin/summit-appearance' 'usr/local/bin/summit-transition' 'usr/local/lib/summitos/summit_look.py' 'usr/share/icons/*' 'usr/share/applications/*'; then
     restart bin/summit-shell -f; launch summit-shell      # Spotlight, Launchpad, Control Center
   fi
   if touched 'usr/share/plank/*' 'usr/share/icons/*' 'usr/share/applications/*' 'usr/share/summitos/icons/*'; then

@@ -156,12 +156,19 @@ def same(src, dst):
     if (os.stat(src).st_mode & 0o7777) != (os.stat(dst).st_mode & 0o7777): return False
     return sha256(src) == sha256(dst)
 
+def missing(pkgs):
+    out = subprocess.run(["dpkg-query", "-W", "-f=${Package} ${db:Status-Status}\n", *pkgs], capture_output=True, text=True).stdout
+    have = {l.split()[0] for l in out.splitlines() if l.endswith(" installed")}
+    return [p for p in pkgs if p not in have]
+
 def apt(pkgs_install, pkgs_remove):
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    wait = ("-o", "DPkg::Lock::Timeout=600")      # Ubuntu's own background updates may hold the lock for a while
+    pkgs_install = missing(pkgs_install)            # already there: nothing to download
     if pkgs_install:
         log("installing packages: " + " ".join(pkgs_install))
-        run("apt-get", "update", "-q", env=env)
-        run("apt-get", "install", "-y", "-q", "--no-install-recommends", *pkgs_install, check=True, env=env)
+        run("apt-get", *wait, "update", "-q", env=env)
+        run("apt-get", *wait, "install", "-y", "-q", "--no-install-recommends", *pkgs_install, check=True, env=env)
     if pkgs_remove:
         log("removing packages: " + " ".join(pkgs_remove))
         run("apt-get", "purge", "-y", "-q", *pkgs_remove, env=env)

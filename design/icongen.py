@@ -223,3 +223,10 @@ icon("summit-update", "#3ED3A1", "#0E8F7A", '''
  <path d="M64 46v28" stroke="#fff" stroke-width="9" stroke-linecap="round"/>
  <path d="M51 64l13 14 13-14" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
 ''')
+
+# App Store: an original shopping-bag glyph with a download arrow
+icon("summit-appstore", "#8A7CFF", "#3B4BE0", '''
+ <path d="M44 48 C44 32 52 25 64 25 C76 25 84 32 84 48" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+ <path d="M30 46 H98 L93 98 Q92 104 86 104 H42 Q36 104 35 98 Z" fill="#fff"/>
+ <path d="M64 58 V84" stroke="#5B5CF0" stroke-width="7" stroke-linecap="round"/>
+ <path d="M53 74 L64 86 L75 74" fill="none" stroke="#5B5CF0" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>''')

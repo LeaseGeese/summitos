@@ -1,0 +1,8 @@
+# Summit OS: apps from the App Store (Flatpak) appear in Launchpad, Spotlight and the dock
+for d in "$HOME/.local/share/flatpak/exports/share" /var/lib/flatpak/exports/share; do
+  case ":${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:" in
+    *":$d:"*) ;;
+    *) XDG_DATA_DIRS="$d:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" ;;
+  esac
+done
+export XDG_DATA_DIRS

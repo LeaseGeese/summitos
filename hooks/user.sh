@@ -15,4 +15,17 @@ case ":$cur:" in
   *:summit-gtk-module:*) ;;
   *) xfconf-query -c xsettings -p /Gtk/Modules -n -t string -s "${cur:+$cur:}summit-gtk-module" ;;
 esac
+# 1.23.0: App Store in the dock, right after Launchpad (once; if you remove it, it stays removed)
+L="$HOME/.config/plank/dock1/launchers"
+if [ -d "$L" ] && [ ! -e "$HOME/.config/summit/appstore-docked" ]; then
+  mkdir -p "$HOME/.config/summit"; touch "$HOME/.config/summit/appstore-docked"
+  printf '[PlankDockItemPreferences]\nLauncher=file:///usr/share/applications/summit-appstore.desktop\n' > "$L/appstore.dockitem"
+  items=$(dconf read /net/launchpad/plank/docks/dock1/dock-items)
+  case "$items" in
+    *appstore.dockitem*) ;;
+    *launchpad.dockitem*) dconf write /net/launchpad/plank/docks/dock1/dock-items "$(echo "$items" | sed "s/'launchpad.dockitem'/'launchpad.dockitem', 'appstore.dockitem'/")" ;;
+    "") ;;
+    *) dconf write /net/launchpad/plank/docks/dock1/dock-items "$(echo "$items" | sed "s/\]$/, 'appstore.dockitem']/")" ;;
+  esac
+fi
 exit 0

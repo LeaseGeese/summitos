@@ -74,35 +74,99 @@ def run(*a):
     try: return subprocess.run(list(a), capture_output=True, text=True, timeout=10)
     except Exception: return None
 
+# Settings go straight to the xfconf service over D-Bus: one quick message each, instead of starting an
+# xfconf-query process per setting (that alone took most of a second on a 2014 dual-core).
+_BUS = None
+def _bus():
+    global _BUS
+    if _BUS is None:
+        try:
+            from gi.repository import Gio
+            _BUS = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        except Exception:
+            _BUS = False
+    return _BUS or None
+
+def _xfconf(method, args, reply=None):
+    from gi.repository import Gio, GLib
+    bus = _bus()
+    if bus is None: raise RuntimeError("no session bus")
+    return bus.call_sync("org.xfce.Xfconf", "/org/xfce/Xfconf", "org.xfce.Xfconf", method,
+                         GLib.Variant(*args), GLib.VariantType(reply) if reply else None,
+                         Gio.DBusCallFlags.NONE, 4000, None)
+
+_VTYPE = {"string": "s", "int": "i", "uint": "u", "bool": "b", "double": "d"}
+def _conv(typ, v):
+    if typ == "bool": return v if isinstance(v, bool) else str(v).lower() == "true"
+    if typ in ("int", "uint"): return int(v)
+    if typ == "double": return float(v)
+    return str(v)
+
 _XF = {}
 def _xf_current(channel):
-    """All current values of a settings channel, read once (reading doesn't disturb any app)."""
+    """All current values of a settings channel, read once per change (reading doesn't disturb any app)."""
     if channel not in _XF:
         vals = {}
-        r = run("xfconf-query", "-c", channel, "-lv")
-        for line in (r.stdout.splitlines() if r and r.returncode == 0 else []):
-            k, _, v = line.partition(" ")
-            vals[k] = v.strip()
+        try:
+            vals = dict(_xfconf("GetAllProperties", ("(ss)", (channel, "/")), "(a{sv})").unpack()[0])
+        except Exception:
+            r = run("xfconf-query", "-c", channel, "-lv")
+            for line in (r.stdout.splitlines() if r and r.returncode == 0 else []):
+                k, _, v = line.partition(" ")
+                vals[k] = v.strip()
         _XF[channel] = vals
     return _XF[channel]
 
+def _same(typ, cur, value):
+    try:
+        if typ == "double": return abs(float(cur) - float(value)) < 1e-6
+        return _conv(typ, cur) == _conv(typ, value)
+    except (TypeError, ValueError):
+        return False
+
 def xf(channel, prop, typ, value):
-    if typ == "bool": value = "true" if value else "false"
-    value = str(value)
     cur = _xf_current(channel).get(prop)
-    if cur is not None:
-        if cur == value: return            # already set: writing it again would make every app redraw
-        if typ == "double":
-            try:
-                if abs(float(cur) - float(value)) < 1e-6: return
-            except ValueError: pass
-    run("xfconf-query", "-c", channel, "-p", prop, "-n", "-t", typ, "-s", value)
-    _XF.setdefault(channel, {})[prop] = value
+    if cur is not None and _same(typ, cur, value): return     # already set: writing it again makes every app redraw
+    try:
+        from gi.repository import GLib
+        _xfconf("SetProperty", ("(ssv)", (channel, prop, GLib.Variant(_VTYPE[typ], _conv(typ, value)))))
+    except Exception:
+        run("xfconf-query", "-c", channel, "-p", prop, "-n", "-t", typ, "-s",
+            ("true" if value else "false") if typ == "bool" else str(value))
+    _XF.setdefault(channel, {})[prop] = _conv(typ, value)
 
 def xf_array(channel, prop, typ, values):
-    args = ["xfconf-query", "-c", channel, "-p", prop, "-n", "-a"]
-    for v in values: args += ["-t", typ, "-s", str(v)]
-    run(*args)
+    cur = _xf_current(channel).get(prop)
+    if isinstance(cur, (list, tuple)) and len(cur) == len(values) and all(_same(typ, a, b) for a, b in zip(cur, values)):
+        return
+    try:
+        from gi.repository import GLib
+        _xfconf("SetProperty", ("(ssv)", (channel, prop, GLib.Variant("av", [GLib.Variant(_VTYPE[typ], _conv(typ, v)) for v in values]))))
+    except Exception:
+        args = ["xfconf-query", "-c", channel, "-p", prop, "-n", "-a"]
+        for v in values: args += ["-t", typ, "-s", str(v)]
+        run(*args)
+    _XF.setdefault(channel, {})[prop] = [_conv(typ, v) for v in values]
+
+PLANK_PATH = "/net/launchpad/plank/docks/dock1/"
+_DOCK = None
+def dock(key, vtype, value):
+    """Change a dock setting in-process (GSettings), instead of starting the dconf tool."""
+    global _DOCK
+    try:
+        from gi.repository import Gio, GLib
+        if _DOCK is None: _DOCK = Gio.Settings.new_with_path("net.launchpad.plank.dock.settings", PLANK_PATH)
+        if _DOCK.get_value(key).unpack() != value: _DOCK.set_value(key, GLib.Variant(vtype, value))
+    except Exception:
+        txt = ("true" if value else "false") if vtype == "b" else f"'{value}'" if vtype == "s" else str(value)
+        run("dconf", "write", PLANK_PATH + key, txt)
+
+def dock_sync():
+    if _DOCK is not None:
+        try:
+            from gi.repository import Gio
+            Gio.Settings.sync()                       # make sure it's written before a command-line run exits
+        except Exception: pass
 
 def rgba(h, a):
     h = h.lstrip("#"); return f"rgba({int(h[0:2],16)},{int(h[2:4],16)},{int(h[4:6],16)},{a})"
@@ -214,7 +278,7 @@ label, entry, spinbutton, menuitem, tooltip, button {{ font-feature-settings: "c
 .xfce4-panel button {{ border-radius: 8px; padding: 0 8px; margin: 2px 1px; border: none; box-shadow: none; }}
 .xfce4-panel button:hover {{ background-color: {hover}; }}
 .xfce4-panel button:checked, .xfce4-panel button:active {{ background-color: alpha(@summit_accent, 0.22); }}
-.xfce4-panel #clock-button label, .xfce4-panel .clock label {{ font-weight: 500; font-feature-settings: "cv05", "tnum"; }}
+.xfce4-panel #clock-button label, .xfce4-panel .clock label {{ font-weight: 500; font-feature-settings: "cv05, tnum"; }}
 
 /* Summit menu (whisker) */
 #whiskermenu-window {{ background-color: transparent; border: none; box-shadow: none; }}
@@ -288,16 +352,15 @@ scale.summit highlight {{ background-color: @summit_accent; border-radius: 6px; 
 
     # compositor (glass blur level)
     blur = s["glass"] == "on"
-    glass_classes = ["Xfce4-panel", "Rofi", "Xfce4-notifyd", "Summit-control-center", "Summit-shell", "Xfce4-terminal"]
-    cond = " || ".join(f"class_g = '{c}'" for c in glass_classes if c != "Xfce4-panel")
-    cond = "(class_g = 'Xfce4-panel' && window_type = 'dock') || " + cond
-    picom = f"""# generated by summit-appearance
+    glass = "(class_g = 'Xfce4-panel' && window_type = 'dock') || class_g = 'Rofi' || class_g = 'Xfce4-notifyd' || " \
+            "class_g = 'Summit-control-center' || class_g = 'Summit-shell' || class_g = 'Xfce4-terminal'"
+    menus = "window_type = 'menu' || window_type = 'dropdown_menu' || window_type = 'popup_menu' || window_type = 'tooltip'"
+    picom = f"""# generated by summit-appearance (picom 12; window rules + animations)
 backend = "glx";
 vsync = true;
 use-damage = true;
-# Intel graphics: avoids flicker/garbage when windows update, and saves GPU work
+# Intel graphics: keeps window updates in order without stalls
 xrender-sync-fence = true;
-glx-no-stencil = true;
 # full-screen apps (video, games) bypass the compositor entirely
 unredir-if-possible = true;
 shadow = true;
@@ -305,8 +368,61 @@ shadow-radius = 24;
 shadow-opacity = 0.42;
 shadow-offset-x = -24;
 shadow-offset-y = -14;
+corner-radius = 14;
+detect-rounded-corners = true;
+detect-client-opacity = true;
+fading = false;
+{'blur: { method = "dual_kawase"; strength = 5; };' if blur else "# glass blur off"}
+
+rules = (
+  {{ blur-background = false; }},
+  {{ match = "{menus} || window_type = 'dnd' || _GTK_FRAME_EXTENTS@"; shadow = false; corner-radius = 0; }},
+  {{ match = "window_type = 'dock' || window_type = 'desktop' || class_g = 'Plank'"; shadow = false; corner-radius = 0; }},
+  {{ match = "class_g = 'Xfce4-panel' && window_type != 'dock'"; shadow = false; }},
+  {{ match = "fullscreen"; shadow = false; corner-radius = 0; }},
+  {"{ match = " + chr(34) + "(" + glass + ") && !_GTK_FRAME_EXTENTS@" + chr(34) + "; blur-background = true; }," if blur else ""}
+
+  # motion, macOS style and all on the GPU: windows open and close with a quick scale and fade,
+  # minimise drops toward the dock, menus fade, Launchpad zooms. The menu bar, dock and desktop never move.
+  {{ match = "window_type = 'normal' || window_type = 'dialog' || window_type = 'utility'";
+     animations = (
+       {{ triggers = [ "open" ];  preset = "appear";    scale = 0.94; duration = 0.17; }},
+       {{ triggers = [ "close" ]; preset = "disappear"; scale = 0.95; duration = 0.13; }},
+       {{ triggers = [ "hide" ];  preset = "fly-out";   direction = "down"; duration = 0.24; }},
+       {{ triggers = [ "show" ];  preset = "fly-in";    direction = "up";   duration = 0.22; }}
+     ); }},
+  {{ match = "({menus} || window_type = 'notification') && class_g != 'Summit-transition'";
+     animations = (
+       {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 0.98; duration = 0.10; }},
+       {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 1.0;  duration = 0.08; }}
+     ); }},
+  {{ match = "class_g = 'Summit-shell' && name = 'Launchpad'";
+     animations = (
+       {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 1.05; duration = 0.20; }},
+       {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 1.05; duration = 0.14; }}
+     ); }},
+  # the appearance crossfade animates itself and must never trigger full-screen bypass
+  {{ match = "class_g = 'Summit-transition'"; shadow = false; corner-radius = 0; unredir = false; }}
+);
+"""
+    write_if_changed(os.path.join(cfg, "picom.conf"), picom, in_place=True)
+    # the same look for Ubuntu's picom 10, used if picom 12 can't drive this machine's graphics (no animations)
+    old_glass = " || ".join(f"class_g = '{c}'" for c in ("Rofi", "Xfce4-notifyd", "Summit-control-center", "Summit-shell", "Xfce4-terminal"))
+    old_glass = "(class_g = 'Xfce4-panel' && window_type = 'dock') || " + old_glass
+    legacy = f"""# generated by summit-appearance (picom 10 fallback)
+backend = "glx";
+vsync = true;
+use-damage = true;
+xrender-sync-fence = true;
+glx-no-stencil = true;
+unredir-if-possible = true;
+shadow = true;
+shadow-radius = 24;
+shadow-opacity = 0.42;
+shadow-offset-x = -24;
+shadow-offset-y = -14;
 shadow-exclude = [ "class_g = 'Summit-transition'", "class_g = 'Plank'", "window_type = 'dock'", "class_g = 'Xfce4-panel' && window_type != 'dock'", "window_type = 'desktop'", "_GTK_FRAME_EXTENTS@:c",
-                   "_NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'", "class_g = 'Rofi' && _NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'" ];
+                   "_NET_WM_STATE@:32a *= '_NET_WM_STATE_FULLSCREEN'" ];
 corner-radius = 14;
 rounded-corners-exclude = [ "class_g = 'Summit-transition'", "window_type = 'dock'", "window_type = 'desktop'", "class_g = 'Plank'", "window_type = 'menu'",
                             "window_type = 'dropdown_menu'", "window_type = 'popup_menu'", "window_type = 'tooltip'",
@@ -314,16 +430,15 @@ rounded-corners-exclude = [ "class_g = 'Summit-transition'", "window_type = 'doc
 fading = true;
 fade-in-step = 0.09;
 fade-out-step = 0.09;
-# the appearance crossfade animates itself and must never trigger full-screen bypass
 fade-exclude = [ "class_g = 'Summit-transition'" ];
 unredir-if-possible-exclude = [ "class_g = 'Summit-transition'" ];
 detect-rounded-corners = true;
 detect-client-opacity = true;
-{"blur: { method = \"dual_kawase\"; strength = 5; };" if blur else "# glass blur off"}
-{"blur-background-exclude = [ \"!(" + cond + ")\", \"_GTK_FRAME_EXTENTS@:c\", \"window_type = 'dock' && class_g = 'Plank'\" ];" if blur else ""}
+{'blur: { method = "dual_kawase"; strength = 5; };' if blur else "# glass blur off"}
+{'blur-background-exclude = [ "!(' + old_glass + ')", "_GTK_FRAME_EXTENTS@:c", "window_type = ' + "'dock'" + ' && class_g = ' + "'Plank'" + '" ];' if blur else ""}
 wintypes: {{ tooltip = {{ shadow = false; }}; dock = {{ shadow = false; }}; dnd = {{ shadow = false; }}; }};
 """
-    write_if_changed(os.path.join(cfg, "picom.conf"), picom, in_place=True)
+    write_if_changed(os.path.join(cfg, "picom-legacy.conf"), legacy, in_place=True)
     # light software profile, used when the GPU path isn't available: no blur, no shadows, no fades,
     # square corners (rounding in software paints black corners); only translucency remains
     soft = f"""# generated by summit-appearance (software compositing)
@@ -363,6 +478,7 @@ def apply(s, restart_compositor=True, changed=None):
     """Apply settings. `changed` limits the work to what those keys affect (None = everything)."""
     ch = ALL if changed is None else set(changed)
     want = lambda *keys: bool(ch & set(keys))
+    _XF.clear()                                   # another app may have changed settings since last time
     dark, accent, lv = write_files(s)
     acc = ACCENTS[s["accent"]]
     gtk = f"{acc[0]}-{'Dark' if dark else 'Light'}"
@@ -394,22 +510,21 @@ def apply(s, restart_compositor=True, changed=None):
     with open(os.path.join(CFG_DIR, "current-wallpaper"), "w") as f: f.write(wp)
     if want("wallpaper", "mode") or (want("accent") and s.get("wallpaper") == "accent"):
       # wallpaper on every monitor and workspace
-      r = run("xfconf-query", "-c", "xfce4-desktop", "-l")
-      props = [p for p in (r.stdout.split() if r and r.returncode == 0 else []) if p.endswith("/last-image")]
-      for m in monitors():
-          for ws in (0, 1):
-              props.append(f"/backdrop/screen0/monitor{m}/workspace{ws}/last-image")
+      props = [p for p in _xf_current("xfce4-desktop") if p.endswith("/last-image")]
+      if not props:
+          for m in monitors():
+              for ws in (0, 1):
+                  props.append(f"/backdrop/screen0/monitor{m}/workspace{ws}/last-image")
       for p in sorted(set(props)):
           xf("xfce4-desktop", p, "string", wp)
           xf("xfce4-desktop", p.replace("last-image", "image-style"), "int", 5)
     # dock (each write redraws the dock, so only touch what changed)
-    plank = "/net/launchpad/plank/docks/dock1/"
-    if want("mode"): run("dconf", "write", plank + "theme", "'Summit-Dark'" if dark else "'Summit-Light'")
-    if want("dock_size"): run("dconf", "write", plank + "icon-size", str(max(32, min(80, int(s["dock_size"])))))
+    if want("mode"): dock("theme", "s", "Summit-Dark" if dark else "Summit-Light")
+    if want("dock_size"): dock("icon-size", "i", max(32, min(80, int(s["dock_size"]))))
     if want("dock_zoom"):
-        run("dconf", "write", plank + "zoom-enabled", "true" if s["dock_zoom"] else "false")
-        run("dconf", "write", plank + "zoom-percent", "150")
-    if want("dock_autohide"): run("dconf", "write", plank + "hide-mode", "'intellihide'" if s["dock_autohide"] else "'none'")
+        dock("zoom-enabled", "b", bool(s["dock_zoom"])); dock("zoom-percent", "i", 150)
+    if want("dock_autohide"): dock("hide-mode", "s", "intellihide" if s["dock_autohide"] else "none")
+    dock_sync()
     if not want("accent", "mode", "glass", "text"):
         with open(os.path.join(CFG_DIR, "applied"), "w") as f: f.write("dark" if dark else "light")
         return dark
@@ -454,6 +569,45 @@ def parse_value(k, v):
     if k == "dock_size": return int(v)
     return v
 
+def update_values(pairs):
+    """Save new values given as "key=value" strings. Returns (changed keys, settings)."""
+    s = load(); changed = set()
+    for kv in pairs:
+        if "=" not in kv: continue
+        k, v = kv.split("=", 1)
+        if k not in DEFAULTS: continue
+        try: v = parse_value(k, v)
+        except ValueError: continue
+        if s.get(k) != v: changed.add(k)
+        s[k] = v
+    if changed: save(s)
+    return changed, s
+
+def apply_changes(s, changed):
+    apply(s, restart_compositor=True, changed=changed)
+    if "glass" in changed:
+        run("xfce4-panel", "-r")        # menu transparency is read at panel start
+
+def lock():
+    """Changes are applied one after another (quick repeated clicks, or two apps at once)."""
+    import fcntl
+    os.makedirs(CFG_DIR, exist_ok=True)
+    f = open(os.path.join(CFG_DIR, ".apply.lock"), "w")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+def delegate(pairs):
+    """Hand the change to summit-shell, which is already running: it applies it in-process behind a crossfade."""
+    if os.environ.get("SUMMIT_APPEARANCE_LOCAL") == "1" or not os.environ.get("DISPLAY"): return False
+    try:
+        from gi.repository import Gio, GLib
+        _bus().call_sync("org.summitos.Shell", "/org/summitos/Shell", "org.gtk.Actions", "Activate",
+                         GLib.Variant("(sava{sv})", ("appearance", [GLib.Variant("s", " ".join(pairs))], {})),
+                         None, Gio.DBusCallFlags.NO_AUTO_START, 1500, None)
+        return True
+    except Exception:
+        return False
+
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "apply"
     s = load()
@@ -471,28 +625,13 @@ def main(argv):
             apply(s)       # no crossfade: this runs on a timer, possibly while the screen is blanked or locked
         return 0
     if cmd == "set":
-        import fcntl
-        os.makedirs(CFG_DIR, exist_ok=True)
-        lock = open(os.path.join(CFG_DIR, ".apply.lock"), "w")
-        fcntl.flock(lock, fcntl.LOCK_EX)          # quick repeated clicks are applied one after another
-        s = load()                                # re-read: an earlier click may have just saved
-        changed = set()
-        for kv in argv[2:]:
-            if "=" not in kv: continue
-            k, v = kv.split("=", 1)
-            if k in DEFAULTS:
-                v = parse_value(k, v)
-                if s.get(k) != v: changed.add(k)
-                s[k] = v
+        if delegate(argv[2:]): return 0
+        held = lock()
+        changed, s = update_values(argv[2:])
         if not changed: return 0
-        save(s)
         t = transition_start(expected_repaints(changed, s)) if changed & VISUAL else None
-        try:
-            apply(s, restart_compositor=True, changed=changed)
-            if "glass" in changed:
-                run("xfce4-panel", "-r")        # menu transparency is read at panel start
-        finally:
-            transition_end(t)
+        try: apply_changes(s, changed)
+        finally: transition_end(t)
         return 0
     if cmd == "session-start":
         if not os.path.exists(STATE):

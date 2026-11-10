@@ -2,6 +2,13 @@
 """summit-shell: Spotlight, Launchpad and Control Center in one small background process,
 so they open instantly. Controlled with `summit-shell-ctl spotlight|launchpad|control-center`."""
 import os, sys, re, ast, operator, threading, time, subprocess, importlib.machinery, importlib.util
+# apps installed from the App Store (Flatpak) must show up at once, even before the next login
+_dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+for _d in (os.path.expanduser("~/.local/share/flatpak/exports/share"), "/var/lib/flatpak/exports/share"):
+    if _d not in _dirs.split(":"):
+        if _d.startswith(os.path.expanduser("~")): os.makedirs(_d + "/applications", exist_ok=True)   # so new apps are noticed
+        _dirs = _d + ":" + _dirs
+os.environ["XDG_DATA_DIRS"] = _dirs
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
@@ -358,6 +365,15 @@ class Shell(Gtk.Application):
         self.css = None; self.app_list = []; self.cc_mod = None; self.cc_win = None
         for name in ("spotlight", "launchpad", "control-center", "reload"):
             act = Gio.SimpleAction.new(name, None); act.connect("activate", self.on_action, name); self.add_action(act)
+        # appearance changes ("mode=dark accent=green"), applied here so nothing has to start up
+        act = Gio.SimpleAction.new("appearance", GLib.VariantType.new("s"))
+        act.connect("activate", lambda _a, p: self.change_appearance(p.get_string().split())); self.add_action(act)
+        self.look = None; self.look_busy = False; self.look_pending = []
+        try:
+            sys.path.insert(0, "/usr/local/lib/summitos"); import summit_look
+            summit_look.LOCAL = self.change_appearance       # Control Center (in this process) calls straight in
+        except ImportError:
+            pass
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -388,6 +404,54 @@ class Shell(Gtk.Application):
     def reload_apps(self):
         self.app_list = apps()
         if self._pad is not None: self._pad.populate()
+
+    # ---- appearance: crossfade, apply in a worker thread, fade once the screen has repainted
+    def _load(self, name, path):
+        loader = importlib.machinery.SourceFileLoader(name, path)
+        spec = importlib.util.spec_from_loader(name, loader)
+        mod = importlib.util.module_from_spec(spec); loader.exec_module(mod)
+        return mod
+
+    def change_appearance(self, pairs):
+        if self.look_busy:                     # a click while a change is under way: apply it right after
+            self.look_pending += pairs; return
+        try:
+            if self.look is None:
+                self.look = self._load("summit_appearance", "/usr/local/bin/summit-appearance")
+                self.fade = self._load("summit_transition", "/usr/local/bin/summit-transition")
+        except Exception as e:
+            print("appearance:", e, file=sys.stderr)
+            subprocess.Popen(["summit-appearance", "set"] + pairs, start_new_session=True,
+                             env=dict(os.environ, SUMMIT_APPEARANCE_LOCAL="1")); return
+        look = self.look
+        changed, st = look.update_values(pairs)       # saved at once, so apps reading the settings see them
+        if not changed: return
+        self.look_busy = True
+        def work():
+            try:
+                with look.lock(): look.apply_changes(st, changed)
+            except Exception as e:
+                print("appearance:", e, file=sys.stderr)
+            GLib.idle_add(applied)
+        def applied():
+            if cf is not None: cf.go()
+            else: finished()
+            return False
+        def finished():
+            self.look_busy = False
+            if self.look_pending:
+                nxt, self.look_pending = self.look_pending, []
+                self.change_appearance(nxt)
+        cf = None
+        if changed & look.VISUAL and os.environ.get("SUMMIT_TRANSITION") != "0":
+            try:
+                cf = self.fade.Crossfade(look.expected_repaints(changed, st),
+                                         on_ready=lambda: threading.Thread(target=work, daemon=True).start(),
+                                         on_done=finished)
+                return
+            except Exception as e:
+                print("crossfade:", e, file=sys.stderr); cf = None
+        threading.Thread(target=work, daemon=True).start()
 
     def do_command_line(self, cl):
         args = cl.get_arguments()[1:]

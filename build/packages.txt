@@ -245,3 +245,6 @@ zip
 zlib1g
 zram-tools
 zstd
+flatpak
+xdg-desktop-portal
+xdg-desktop-portal-gtk

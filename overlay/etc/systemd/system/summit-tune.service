@@ -1,0 +1,10 @@
+[Unit]
+Description=Summit OS performance tuning
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/summit-tune
+
+[Install]
+WantedBy=multi-user.target

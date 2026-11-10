@@ -18,7 +18,9 @@ echo
 echo "--- compositor"
 pgrep -a picom | cut -c1-120 || echo "picom NOT running"
 [ -f "$HOME/.config/summit/no-gpu-blur" ] && echo "mode: software (no GPU blur)" || echo "mode: GPU"
-tail -n 5 "$HOME/.cache/summit-picom.log" 2>/dev/null
+grep -E "GPU mode|software mode|blank screen|crashed|didn't start" "$HOME/.cache/summit-picom.log" 2>/dev/null | tail -n 3
+[ -f "$HOME/.config/summit/no-picom12" ] && echo "picom 12 disabled on this Mac (fell back to picom 10)"
+echo "tuning: cpu floor $(cat /sys/devices/system/cpu/intel_pstate/min_perf_pct 2>/dev/null)%  gpu min $(cat /sys/class/drm/card*/gt_min_freq_mhz 2>/dev/null | head -1) MHz of $(cat /sys/class/drm/card*/gt_RP0_freq_mhz 2>/dev/null | head -1)  boot: $(grep -o 'preempt=[a-z]*' /proc/cmdline || echo 'preempt default')"
 echo
 echo "--- load"
 uptime | sed 's/.*load/load/'
@@ -34,7 +36,7 @@ echo "--- appearance"
 cat "$HOME/.config/summit/appearance.json" 2>/dev/null | tr -d '\n ' ; echo
 echo "theme: $(xfconf-query -c xsettings -p /Net/ThemeName)  icons: $(xfconf-query -c xsettings -p /Net/IconThemeName)"
 ACC=$(python3 -c 'import json;print(json.load(open("'"$HOME"'/.config/summit/appearance.json")).get("accent","blue"))' 2>/dev/null || echo blue)
-S=$(date +%s%N); ERR=$(timeout 120 summit-appearance set accent="$ACC" 2>&1 | tail -3); E=$(date +%s%N)
+S=$(date +%s%N); ERR=$(SUMMIT_APPEARANCE_LOCAL=1 timeout 120 summit-appearance set accent="$ACC" 2>&1 | tail -3); E=$(date +%s%N)
 echo "re-applying accent '$ACC' took $(( (E - S) / 1000000 )) ms ${ERR:+error: $ERR}"
 echo
 echo "--- recent errors"

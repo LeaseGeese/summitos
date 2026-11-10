@@ -1,0 +1,598 @@
+#!/usr/bin/python3
+"""Summit App Store: find and install apps from Flathub.
+
+Apps install for you only (no password needed) with Flatpak, each in its own sandbox, and show up in
+Launchpad, Spotlight and the dock right away. The store only runs while its window is open.
+
+  summit-appstore [--show APP_ID] [--updates]
+"""
+import os, sys, json, gzip, re, threading, subprocess, time, urllib.request, hashlib, warnings
+import xml.etree.ElementTree as ET
+os.environ.setdefault("NO_AT_BRIDGE", "1"); warnings.filterwarnings("ignore")
+import gi
+gi.require_version("Gtk", "3.0"); gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gtk, Gdk, GLib, Gio, GdkPixbuf, Pango
+
+HOME = os.path.expanduser("~")
+FAKE = os.environ.get("SUMMIT_APPSTORE_FAKE")       # testing: a sample catalogue and simulated installs
+REMOTE = "flathub"
+REPO_URL = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+AS_DIR = os.path.join(HOME, ".local/share/flatpak/appstream", REMOTE, "x86_64", "active")
+CACHE = os.path.join(HOME, ".cache", "summit-appstore"); os.makedirs(CACHE, exist_ok=True)
+XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
+
+FEATURED = ["com.google.Chrome", "org.mozilla.firefox", "com.spotify.Client", "com.discordapp.Discord",
+            "us.zoom.Zoom", "com.slack.Slack", "com.visualstudio.code", "org.libreoffice.LibreOffice",
+            "org.videolan.VLC", "com.obsproject.Studio", "org.gimp.GIMP", "com.valvesoftware.Steam",
+            "md.obsidian.Obsidian", "org.mozilla.Thunderbird", "org.telegram.desktop", "org.signal.Signal",
+            "com.brave.Browser", "com.microsoft.Edge", "org.kde.krita", "org.audacityteam.Audacity",
+            "org.inkscape.Inkscape", "fr.handbrake.ghb", "org.keepassxc.KeePassXC", "com.calibre_ebook.calibre"]
+POPULAR = set(FEATURED) | {"com.usebottles.bottles", "org.kde.kdenlive", "org.blender.Blender", "net.lutris.Lutris",
+            "com.github.tchx84.Flatseal", "io.missioncenter.MissionCenter", "org.qbittorrent.qBittorrent",
+            "com.github.johnfactotum.Foliate", "org.darktable.Darktable", "org.shotcut.Shotcut", "com.github.IsmaelMartinez.teams_for_linux"}
+WINDOWS = ["com.usebottles.bottles", "net.lutris.Lutris", "com.heroicgameslauncher.hgl", "com.valvesoftware.Steam"]
+SECTIONS = [  # (key, title, icon, freedesktop categories)
+    ("discover", "Discover", "starred-symbolic", None),
+    ("productivity", "Productivity", "x-office-document-symbolic", {"Office", "ProjectManagement", "Calendar", "WordProcessor", "Spreadsheet", "Presentation", "ContactManagement"}),
+    ("internet", "Internet & Chat", "network-workgroup-symbolic", {"Network", "WebBrowser", "Chat", "InstantMessaging", "Email", "VideoConference", "FileTransfer", "P2P"}),
+    ("media", "Music & Video", "folder-music-symbolic", {"AudioVideo", "Audio", "Video", "Music", "Player", "Recorder"}),
+    ("graphics", "Graphics & Photo", "image-x-generic-symbolic", {"Graphics", "Photography", "2DGraphics", "3DGraphics", "RasterGraphics", "VectorGraphics"}),
+    ("games", "Games", "input-gaming-symbolic", {"Game"}),
+    ("dev", "Developer Tools", "utilities-terminal-symbolic", {"Development", "IDE"}),
+    ("education", "Education & Science", "accessories-dictionary-symbolic", {"Education", "Science"}),
+    ("utilities", "Utilities", "applications-utilities-symbolic", {"Utility", "System", "FileTools", "Settings"}),
+    ("windows", "Windows Apps", "computer-symbolic", None),
+    (None, None, None, None),
+    ("installed", "Installed", "emblem-ok-symbolic", None),
+    ("updates", "Updates", "software-update-available-symbolic", None),
+]
+PAGE = 60          # cards per page: enough to browse, few enough to stay quick on older Macs
+
+# ------------------------------------------------------------------ backend (flatpak)
+def flatpak(*args, timeout=600):
+    try: return subprocess.run(["flatpak", *args], capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        class R: returncode = 1; stdout = ""; stderr = str(e)
+        return R()
+
+def have_flatpak():
+    return FAKE or bool(GLib.find_program_in_path("flatpak"))
+
+def ensure_catalogue(force=False):
+    """Add Flathub for this user and fetch its catalogue. Returns an error message or None."""
+    if FAKE: return None
+    if "flathub" not in flatpak("remotes", "--user", "--columns=name").stdout.split():
+        r = flatpak("remote-add", "--user", "--if-not-exists", REMOTE, REPO_URL)
+        if r.returncode != 0: return "Couldn't reach Flathub. Check your internet connection and try again."
+    if force or not catalogue_file() or time.time() - os.path.getmtime(catalogue_file()) > 24 * 3600:
+        r = flatpak("update", "--user", "--appstream", REMOTE)
+        if r.returncode != 0 and not catalogue_file():
+            return "Couldn't download the app catalogue. Check your internet connection and try again."
+    return None
+
+def catalogue_file():
+    if FAKE: return FAKE
+    for name in ("appstream.xml.gz", "appstream.xml"):
+        p = os.path.join(AS_DIR, name)
+        if os.path.exists(p): return p
+    return None
+
+def text_of(el):
+    return re.sub(r"\s+", " ", "".join(el.itertext())).strip() if el is not None else ""
+
+def parse_catalogue(path):
+    """Flathub's AppStream catalogue -> compact list of apps (cached, so later opens are instant)."""
+    st = os.stat(path); key = f"{path}:{st.st_mtime_ns}:{st.st_size}:3"
+    cache = os.path.join(CACHE, "index.json")
+    try:
+        with open(cache) as f:
+            d = json.load(f)
+        if d.get("key") == key: return d["apps"]
+    except (OSError, ValueError):
+        pass
+    apps = []
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rb") as f:
+        for _, el in ET.iterparse(f, events=("end",)):
+            if el.tag != "component": continue
+            if el.get("type") in ("desktop", "desktop-application"):
+                bundle = el.find("bundle")
+                ref = bundle.text.strip() if bundle is not None and bundle.text else ""
+                aid = ref.split("/")[1] if ref.count("/") >= 3 else (el.findtext("id") or "").removesuffix(".desktop")
+                def plain(tag):
+                    for c in el.findall(tag):
+                        if c.get(XML_LANG) is None: return text_of(c)
+                    return ""
+                desc = next((d for d in el.findall("description") if d.get(XML_LANG) is None), None)
+                paras = []
+                if desc is not None:
+                    for c in desc:
+                        if c.tag == "p": paras.append(text_of(c))
+                        elif c.tag in ("ul", "ol"): paras.append("\n".join("•  " + text_of(li) for li in c.findall("li")))
+                icon = ""
+                for ic in el.findall("icon"):
+                    if ic.get("type") == "cached":
+                        icon = ic.text.strip() if ic.text else ""
+                        if ic.get("width") == "128": break
+                shot = ""
+                for sc in el.iter("screenshot"):
+                    imgs = sc.findall("image")
+                    thumbs = sorted((int(i.get("width") or 0), i.text.strip()) for i in imgs if i.get("type") == "thumbnail" and i.text)
+                    pick = [u for w, u in thumbs if 500 <= w <= 1000] or [u for w, u in thumbs] or [i.text.strip() for i in imgs if i.text]
+                    if pick: shot = pick[0]
+                    if sc.get("type") == "default": break
+                dev = el.find("developer")
+                developer = (text_of(dev.find("name")) if dev is not None and dev.find("name") is not None else "") or plain("developer_name")
+                custom = {v.get("key"): (v.text or "") for v in el.iter("value")}
+                apps.append({
+                    "id": aid, "name": plain("name") or aid, "summary": plain("summary"),
+                    "desc": "\n\n".join(p for p in paras if p)[:4000], "icon": icon, "shot": shot,
+                    "dev": developer, "license": el.findtext("project_license") or "",
+                    "cats": [c.text for c in el.iter("category") if c.text],
+                    "kw": " ".join(k.text for k in el.iter("keyword") if k.text and k.get(XML_LANG) is None)[:300],
+                    "verified": custom.get("flathub::verification::verified") == "true",
+                    "home": next((u.text for u in el.findall("url") if u.get("type") == "homepage" and u.text), ""),
+                })
+            el.clear()
+    try:
+        with open(cache + ".tmp", "w") as f: json.dump({"key": key, "apps": apps}, f)
+        os.replace(cache + ".tmp", cache)
+    except OSError:
+        pass
+    return apps
+
+_fake_installed = {"org.videolan.VLC"}
+def installed_ids():
+    if FAKE: return set(_fake_installed)
+    out = flatpak("list", "--app", "--columns=application").stdout
+    return {l.strip() for l in out.splitlines() if l.strip()}
+
+def update_ids():
+    if FAKE: return {"org.videolan.VLC"} & _fake_installed
+    out = flatpak("remote-ls", "--user", "--updates", "--app", "--columns=application", REMOTE).stdout
+    return {l.strip() for l in out.splitlines() if l.strip() and "." in l}
+
+def run_job(args, on_line):
+    """Run a flatpak install/remove/update, reporting progress lines. Returns (ok, message)."""
+    if FAKE:
+        for i in range(6): time.sleep(0.4); on_line(f"Downloading… {i * 20}%")
+        if args[0] == "install": _fake_installed.add(args[-1])
+        if args[0] == "uninstall": _fake_installed.discard(args[-1])
+        return True, ""
+    try:
+        p = subprocess.Popen(["flatpak", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except OSError as e:
+        return False, str(e)
+    last = ""
+    for line in iter(p.stdout.readline, ""):
+        for part in line.replace("\r", "\n").splitlines():
+            part = part.strip()
+            if part: last = part; on_line(part)
+    p.wait()
+    return p.returncode == 0, last
+
+def launch(aid):
+    if FAKE: return
+    subprocess.Popen(["flatpak", "run", aid], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+# ------------------------------------------------------------------ icons and pictures
+_icon_cache = {}
+def app_icon(app, size):
+    k = (app["id"], size)
+    if k in _icon_cache: return _icon_cache[k]
+    pb = None
+    for d in ("128x128", "64x64"):
+        p = os.path.join(os.path.dirname(catalogue_file() or "") if FAKE else AS_DIR, "icons", d, app.get("icon") or "")
+        if app.get("icon") and os.path.exists(p):
+            try: pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(p, size, size, True); break
+            except GLib.Error: pass
+    if pb is None:
+        try: pb = Gtk.IconTheme.get_default().load_icon("application-x-executable", size, Gtk.IconLookupFlags.FORCE_SIZE)
+        except GLib.Error: pb = None
+    _icon_cache[k] = pb
+    return pb
+
+def load_picture(url, width, done):
+    """Fetch a screenshot in the background (cached on disk) and hand back a scaled image."""
+    def work():
+        path = os.path.join(CACHE, "shots", hashlib.sha1(url.encode()).hexdigest()[:20])
+        try:
+            if not os.path.exists(path):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                req = urllib.request.Request(url, headers={"User-Agent": "SummitAppStore/1.0"})
+                with urllib.request.urlopen(req, timeout=20) as r, open(path + ".tmp", "wb") as f: f.write(r.read(8 * 1024 * 1024))
+                os.replace(path + ".tmp", path)
+            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, width, -1, True)
+            GLib.idle_add(done, pb)
+        except Exception:
+            pass
+    threading.Thread(target=work, daemon=True).start()
+
+def label(text, cls=None, xalign=0.0, wrap=False, lines=0, sel=False):
+    l = Gtk.Label(label=text, xalign=xalign)
+    if wrap: l.set_line_wrap(True); l.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+    if lines: l.set_lines(lines); l.set_ellipsize(Pango.EllipsizeMode.END)
+    if sel: l.set_selectable(True)
+    for c in (cls.split() if cls else []): l.get_style_context().add_class(c)
+    return l
+
+CSS = b"""
+.store-card { border-radius: 14px; padding: 12px; background-color: alpha(@theme_fg_color, 0.045); border: 1px solid alpha(@theme_fg_color, 0.06); }
+.store-card:hover { background-color: alpha(@theme_fg_color, 0.08); }
+.store-name { font-weight: 600; }
+.store-sub { opacity: 0.66; font-size: 0.92em; }
+.store-banner { border-radius: 18px; padding: 22px 26px; color: #ffffff;
+                background-image: linear-gradient(120deg, #5b6cff, #8f5bff 55%, #d65bc7); }
+.store-banner.windows { background-image: linear-gradient(120deg, #1f8fff, #19b2c9 60%, #2fd39a); }
+.store-banner label { color: #ffffff; }
+.store-banner-title { font-size: 20pt; font-weight: 700; font-family: "Inter Display"; }
+.store-section { font-size: 14pt; font-weight: 700; }
+button.store-get { border-radius: 999px; padding: 2px 16px; font-weight: 700; min-height: 26px; }
+.store-hero { font-size: 22pt; font-weight: 700; font-family: "Inter Display"; }
+.store-shot { border-radius: 12px; }
+"""
+
+# ------------------------------------------------------------------ UI
+class Store(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="App Store")
+        self.set_default_size(1020, 680); self.set_wmclass("summit-appstore", "Summit-appstore")
+        self.apps = []; self.by_id = {}; self.installed = set(); self.updates = set(); self.jobs = {}
+        self.section = "discover"; self.shown = []; self.limit = PAGE
+
+        # Summit's own title bar (traffic-light buttons), with a toolbar row for Back and Search
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); self.add(outer)
+        bar = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=8, margin_bottom=8)
+        self.back = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
+        self.back.set_tooltip_text("Back"); self.back.connect("clicked", lambda *_: self.show_list()); bar.pack_start(self.back, False, False, 0)
+        self.search = Gtk.SearchEntry(placeholder_text="Search apps", width_chars=30)
+        self.search.connect("search-changed", lambda *_: self.on_search()); bar.pack_end(self.search, False, False, 0)
+        outer.pack_start(bar, False, False, 0); outer.pack_start(Gtk.Separator(), False, False, 0)
+        self.connect("key-press-event", self.on_key)
+
+        root = Gtk.Box(); outer.pack_start(root, True, True, 0)
+        side = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE); side.get_style_context().add_class("summit-sidebar")
+        side.set_size_request(210, -1); side.set_margin_top(10)
+        self.rows = {}
+        for key, title, icon, _ in SECTIONS:
+            if key is None:
+                sep = Gtk.ListBoxRow(selectable=False, activatable=False); sep.add(Gtk.Separator(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)); side.add(sep); continue
+            r = Gtk.ListBoxRow(); b = Gtk.Box(spacing=10)
+            b.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0); b.pack_start(label(title), False, False, 0)
+            r.add(b); r.key = key; side.add(r); self.rows[key] = r
+        side.connect("row-selected", self.on_section); self.side = side
+        root.pack_start(side, False, False, 0); root.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=150)
+        root.pack_start(self.stack, True, True, 0)
+        # loading / message page
+        msg = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+        self.spinner = Gtk.Spinner(); self.spinner.set_size_request(32, 32); msg.pack_start(self.spinner, False, False, 0)
+        self.msg = label("", "store-section", xalign=0.5, wrap=True); self.msg.set_max_width_chars(48); msg.pack_start(self.msg, False, False, 0)
+        self.msg_sub = label("", "summit-subtle", xalign=0.5, wrap=True); self.msg_sub.set_max_width_chars(56); msg.pack_start(self.msg_sub, False, False, 0)
+        self.retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER); self.retry.connect("clicked", lambda *_: self.load(force=True))
+        msg.pack_start(self.retry, False, False, 0)
+        self.stack.add_named(msg, "message")
+        # list page
+        self.list_sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=24)
+        self.list_sc.add(self.list_box); self.stack.add_named(self.list_sc, "list")
+        # detail page
+        self.detail_sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.stack.add_named(self.detail_sc, "detail")
+
+        prov = Gtk.CssProvider(); prov.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.show_all(); self.back.hide(); self.retry.hide()
+        self.side.select_row(self.rows["discover"])
+        self.load()
+
+    def on_key(self, w, e):
+        # typing anywhere searches; Esc or Alt+Left goes back
+        if e.keyval == Gdk.KEY_Escape or (e.keyval == Gdk.KEY_Left and e.state & Gdk.ModifierType.MOD1_MASK):
+            if self.back.get_visible(): self.show_list(); return True
+        if self.search.has_focus() or not Gdk.keyval_to_unicode(e.keyval) or e.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK):
+            return False
+        self.search.grab_focus_without_selecting()
+        return self.search.handle_event(e)
+
+    # ---- loading
+    def message(self, title, sub="", busy=False, retry=False):
+        self.msg.set_text(title); self.msg_sub.set_text(sub)
+        self.spinner.start() if busy else self.spinner.stop(); self.spinner.set_visible(busy); self.retry.set_visible(retry)
+        self.stack.set_visible_child_name("message")
+
+    def load(self, force=False):
+        if not have_flatpak():
+            self.message("App Store isn't set up yet", "Install the latest Summit update (Settings → Software Update), then open the App Store again."); return
+        self.message("Getting the app catalogue…", "The first time takes a minute. After that the App Store opens instantly.", busy=True)
+        def work():
+            err = ensure_catalogue(force)
+            path = catalogue_file()
+            if not path:
+                GLib.idle_add(self.message, "Can't reach Flathub", err or "Check your internet connection.", False, True); return
+            try: apps = parse_catalogue(path)
+            except Exception as e:
+                GLib.idle_add(self.message, "The app catalogue couldn't be read", str(e)[:200], False, True); return
+            inst = installed_ids(); ups = update_ids()
+            GLib.idle_add(self.loaded, apps, inst, ups)
+        threading.Thread(target=work, daemon=True).start()
+
+    def loaded(self, apps, inst, ups):
+        self.apps = apps; self.by_id = {a["id"]: a for a in apps}; self.installed = inst; self.updates = ups & inst
+        self.update_badge()
+        want = self.get_application().pending_show
+        if want and want in self.by_id: self.show_detail(self.by_id[want])
+        elif self.get_application().pending_updates: self.side.select_row(self.rows["updates"])
+        else: self.show_list()
+
+    def update_badge(self):
+        r = self.rows["updates"]; b = r.get_child()
+        for c in b.get_children()[2:]: b.remove(c)
+        if self.updates:
+            n = label(str(len(self.updates)), "summit-subtle"); b.pack_end(n, False, False, 8); n.show()
+
+    # ---- lists
+    def on_section(self, _lb, row):
+        if row is None: return
+        self.section = row.key; self.limit = PAGE
+        if self.search.get_text(): self.search.set_text("")
+        if self.apps: self.show_list()
+
+    def on_search(self):
+        self.limit = PAGE
+        if self.apps: self.show_list()
+
+    def apps_for(self, key):
+        cats = dict((k, c) for k, _, _, c in SECTIONS if k)
+        rank = lambda a: (a["id"] not in POPULAR, not a["verified"], a["name"].lower())
+        if key == "installed": return sorted((self.by_id.get(i) or {"id": i, "name": i, "summary": "", "icon": "", "verified": False} for i in self.installed), key=rank)
+        if key == "updates": return sorted((self.by_id[i] for i in self.updates if i in self.by_id), key=rank)
+        if key == "windows": return [self.by_id[i] for i in WINDOWS if i in self.by_id]
+        want = cats.get(key) or set()
+        return sorted((a for a in self.apps if want & set(a["cats"])), key=rank)
+
+    def search_results(self, q):
+        q = q.lower().strip(); words = q.split()
+        out = []
+        for a in self.apps:
+            name = a["name"].lower(); hay = f"{name} {a['summary'].lower()} {a['kw'].lower()} {a['id'].lower()}"
+            if not all(w in hay for w in words): continue
+            s = 100 if name == q else 60 if name.startswith(q) else 40 if q in name else 10
+            s += 8 if a["id"] in POPULAR else 0; s += 3 if a["verified"] else 0
+            out.append((-s, a["name"].lower(), a))
+        return [a for _, _, a in sorted(out, key=lambda t: t[:2])]
+
+    def clear(self, box):
+        for c in box.get_children(): box.remove(c); c.destroy()
+
+    def show_list(self):
+        self.back.hide()
+        box = self.list_box; self.clear(box)
+        q = self.search.get_text().strip()
+        if q:
+            items = self.search_results(q)
+            box.pack_start(label(f"Results for “{q}”", "store-section"), False, False, 0)
+            self.grid(box, items, empty="No apps found. Try another word.")
+        elif self.section == "discover":
+            ban = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6); ban.get_style_context().add_class("store-banner")
+            ban.pack_start(label("Thousands of apps, one click away", "store-banner-title"), False, False, 0)
+            ban.pack_start(label("Apps from Flathub install just for you and run in their own sandbox. Uninstall any time.", wrap=True), False, False, 0)
+            box.pack_start(ban, False, False, 0)
+            box.pack_start(label("Popular apps", "store-section"), False, False, 0)
+            self.grid(box, [self.by_id[i] for i in FEATURED if i in self.by_id], paged=False)
+            win = Gtk.Box(spacing=18); win.get_style_context().add_class("store-banner"); win.get_style_context().add_class("windows")
+            t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            t.pack_start(label("Run Windows apps", "store-banner-title"), False, False, 0)
+            t.pack_start(label("Bottles runs many Windows programs (.exe) on Summit. Double-click an installer and pick Bottles.", wrap=True), False, False, 0)
+            win.pack_start(t, True, True, 0)
+            if "com.usebottles.bottles" in self.by_id:
+                b = Gtk.Button(label="Get Bottles", valign=Gtk.Align.CENTER); b.get_style_context().add_class("store-get")
+                b.connect("clicked", lambda *_: self.show_detail(self.by_id["com.usebottles.bottles"])); win.pack_end(b, False, False, 0)
+            box.pack_start(win, False, False, 0)
+        else:
+            title = dict((k, t) for k, t, _, _ in SECTIONS if k)[self.section]
+            head = Gtk.Box(spacing=12); head.pack_start(label(title, "store-section"), False, False, 0)
+            items = self.apps_for(self.section)
+            if self.section == "updates" and items:
+                b = Gtk.Button(label="Update All"); b.get_style_context().add_class("suggested-action")
+                b.connect("clicked", lambda *_: self.update_all(b)); head.pack_end(b, False, False, 0)
+            box.pack_start(head, False, False, 0)
+            if self.section == "windows":
+                box.pack_start(label("These apps run Windows software on Summit. Bottles is the easiest: it sets up a "
+                                     "small Windows environment for each program. Games launchers and simple programs work best; "
+                                     "recent Microsoft Office and Adobe apps usually don't.", "summit-subtle", wrap=True), False, False, 0)
+            empty = {"installed": "Apps you install from the App Store appear here.",
+                     "updates": "Everything is up to date."}.get(self.section, "Nothing here yet.")
+            self.grid(box, items, empty=empty)
+        box.show_all(); self.stack.set_visible_child_name("list")
+        self.list_sc.get_vadjustment().set_value(0)
+
+    def grid(self, box, items, empty="", paged=True):
+        if not items:
+            box.pack_start(label(empty, "summit-subtle"), False, False, 0); return
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=2,
+                           max_children_per_line=3, column_spacing=12, row_spacing=12)
+        show = items[:self.limit] if paged else items
+        for a in show: flow.add(self.card(a))
+        box.pack_start(flow, False, False, 0)
+        if paged and len(items) > len(show):
+            more = Gtk.Button(label=f"Show More ({len(items) - len(show)} more)", halign=Gtk.Align.CENTER)
+            def more_cb(*_):
+                self.limit += PAGE; y = self.list_sc.get_vadjustment().get_value(); self.show_list()
+                GLib.idle_add(lambda: self.list_sc.get_vadjustment().set_value(y))
+            more.connect("clicked", more_cb); box.pack_start(more, False, False, 0)
+
+    def card(self, a):
+        ev = Gtk.EventBox(); ev.get_style_context().add_class("store-card")
+        b = Gtk.Box(spacing=12); ev.add(b)
+        pb = app_icon(a, 56); b.pack_start(Gtk.Image.new_from_pixbuf(pb) if pb else Gtk.Image(), False, False, 0)
+        t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, valign=Gtk.Align.CENTER)
+        t.pack_start(label(a["name"], "store-name", lines=1), False, False, 0)
+        t.pack_start(label(a.get("summary", ""), "store-sub", lines=2, wrap=True), False, False, 0)
+        b.pack_start(t, True, True, 0)
+        b.pack_end(self.action_button(a, small=True), False, False, 0)
+        ev.connect("button-release-event", lambda *_: self.show_detail(a))
+        ev.set_tooltip_text(a.get("summary") or a["name"])
+        return ev
+
+    def action_button(self, a, small=False):
+        aid = a["id"]
+        if aid in self.jobs:
+            sp = Gtk.Spinner(valign=Gtk.Align.CENTER); sp.start(); return sp
+        if aid in self.installed:
+            b = Gtk.Button(label="Update" if aid in self.updates else "Open", valign=Gtk.Align.CENTER)
+            b.connect("clicked", lambda *_: self.install(aid) if aid in self.updates else launch(aid))
+        else:
+            b = Gtk.Button(label="Get", valign=Gtk.Align.CENTER); b.connect("clicked", lambda *_: self.install(aid))
+        b.get_style_context().add_class("store-get")
+        if aid not in self.installed or aid in self.updates: b.get_style_context().add_class("suggested-action")
+        return b
+
+    # ---- detail
+    def show_detail(self, a):
+        self.current = a; self.back.show()
+        old = self.detail_sc.get_child()
+        if old: self.detail_sc.remove(old); old.destroy()
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=28)
+        top = Gtk.Box(spacing=20)
+        pb = app_icon(a, 112); top.pack_start(Gtk.Image.new_from_pixbuf(pb) if pb else Gtk.Image(), False, False, 0)
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
+        info.pack_start(label(a["name"], "store-hero", wrap=True), False, False, 0)
+        if a.get("summary"): info.pack_start(label(a["summary"], wrap=True), False, False, 0)
+        by = a.get("dev") or ""
+        if a.get("verified"): by = (by + "  ·  " if by else "") + "✓ Verified"
+        if by: info.pack_start(label(by, "summit-subtle"), False, False, 0)
+        top.pack_start(info, True, True, 0)
+        acts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.CENTER)
+        self.detail_actions = acts; self.fill_actions(a)
+        top.pack_end(acts, False, False, 0)
+        page.pack_start(top, False, False, 0)
+        self.progress = Gtk.ProgressBar(show_text=True); self.progress.set_no_show_all(True); page.pack_start(self.progress, False, False, 0)
+        if a.get("shot"):
+            holder = Gtk.Box(); page.pack_start(holder, False, False, 0)
+            def got(pb):
+                if self.current is a: img = Gtk.Image.new_from_pixbuf(pb); img.get_style_context().add_class("store-shot"); holder.pack_start(img, False, False, 0); img.show()
+                return False
+            load_picture(a["shot"], 640, got)
+        if a.get("desc"): page.pack_start(label(a["desc"], wrap=True, sel=True), False, False, 0)
+        facts = []
+        lic = a.get("license", "")
+        if lic: facts.append(("License", "Proprietary" if "proprietary" in lic.lower() else lic.replace("LicenseRef-", "")))
+        if a.get("home"): facts.append(("Website", a["home"]))
+        facts.append(("Installs from", "Flathub (just for you; no password needed)"))
+        grid = Gtk.Grid(column_spacing=16, row_spacing=6)
+        for i, (k, v) in enumerate(facts):
+            grid.attach(label(k, "summit-subtle"), 0, i, 1, 1); grid.attach(label(v, wrap=True, sel=True), 1, i, 1, 1)
+        page.pack_start(grid, False, False, 0)
+        self.detail_sc.add(page); page.show_all(); self.stack.set_visible_child_name("detail")
+        self.detail_sc.get_vadjustment().set_value(0)
+        if a["id"] in self.jobs: self.progress.show(); self.progress.set_text(self.jobs[a["id"]]); self.progress.pulse()
+
+    def fill_actions(self, a):
+        box = self.detail_actions
+        for c in box.get_children(): box.remove(c); c.destroy()
+        box.pack_start(self.action_button(a), False, False, 0)
+        if a["id"] in self.installed and a["id"] not in self.jobs:
+            r = Gtk.Button(label="Uninstall"); r.get_style_context().add_class("destructive-action")
+            r.connect("clicked", lambda *_: self.uninstall(a["id"])); box.pack_start(r, False, False, 0)
+        box.show_all()
+
+    # ---- jobs
+    def refresh_views(self, aid):
+        if self.stack.get_visible_child_name() == "detail" and getattr(self, "current", None) and self.current["id"] == aid:
+            self.fill_actions(self.current)
+        elif self.stack.get_visible_child_name() == "list":
+            y = self.list_sc.get_vadjustment().get_value(); self.show_list()
+            GLib.idle_add(lambda: self.list_sc.get_vadjustment().set_value(y))
+
+    def job(self, aid, args, verb, done_msg):
+        if aid in self.jobs: return
+        self.jobs[aid] = verb + "…"; self.refresh_views(aid)
+        on_detail = lambda: self.stack.get_visible_child_name() == "detail" and self.current["id"] == aid
+        if on_detail(): self.progress.show(); self.progress.set_text(verb + "…")
+        frac = {"v": None}
+        def tick():
+            if aid not in self.jobs: return False
+            if on_detail():
+                if frac["v"] is None: self.progress.pulse()
+                else: self.progress.set_fraction(frac["v"])
+            return True
+        GLib.timeout_add(120, tick)
+        def line(text):
+            m = re.search(r"(\d{1,3})%", text)
+            short = (verb + f"… {m.group(1)}%") if m else (verb + "…")
+            if m: frac["v"] = min(1.0, int(m.group(1)) / 100)
+            self.jobs[aid] = short
+            GLib.idle_add(lambda: on_detail() and self.progress.set_text(short))
+        def work():
+            ok, last = run_job(args, line)
+            GLib.idle_add(finish, ok, last)
+        def finish(ok, last):
+            self.jobs.pop(aid, None)
+            self.installed = installed_ids(); self.updates.discard(aid) if ok else None
+            self.update_badge()
+            if on_detail(): self.progress.hide()
+            name = self.by_id.get(aid, {}).get("name", aid)
+            if ok: notify(done_msg.format(name=name))
+            else:
+                d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.OK,
+                                      text=f"{name} couldn't be {verb.lower().replace('ing', 'ed')}")
+                d.format_secondary_text((last or "Check your internet connection and try again.")[:300]); d.run(); d.destroy()
+            self.refresh_views(aid)
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+    def install(self, aid):
+        if aid in self.installed and aid in self.updates:
+            self.job(aid, ["update", "--user", "-y", "--noninteractive", aid], "Updating", "{name} is up to date")
+        else:
+            self.job(aid, ["install", "--user", "-y", "--noninteractive", REMOTE, aid], "Installing",
+                     "{name} is installed. Find it in Launchpad or Spotlight.")
+
+    def uninstall(self, aid):
+        name = self.by_id.get(aid, {}).get("name", aid)
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.NONE,
+                              text=f"Uninstall {name}?")
+        d.format_secondary_text("Its settings stay on this Mac, so you can install it again later.")
+        d.add_button("Cancel", Gtk.ResponseType.CANCEL); b = d.add_button("Uninstall", Gtk.ResponseType.OK)
+        b.get_style_context().add_class("destructive-action")
+        r = d.run(); d.destroy()
+        if r != Gtk.ResponseType.OK: return
+        # --delete-data is not used: settings are kept. Unused shared parts are removed afterwards to free space.
+        self.job(aid, ["uninstall", "--user", "-y", "--noninteractive", aid], "Removing", "{name} was uninstalled")
+        threading.Thread(target=lambda: (time.sleep(2), flatpak("uninstall", "--user", "--unused", "-y", "--noninteractive")) if not FAKE else None,
+                         daemon=True).start()
+
+    def update_all(self, btn):
+        btn.set_sensitive(False); btn.set_label("Updating…")
+        def work():
+            ok, last = run_job(["update", "--user", "-y", "--noninteractive"], lambda l: None)
+            GLib.idle_add(done, ok)
+        def done(ok):
+            self.updates = update_ids() & self.installed if not FAKE else set()
+            self.update_badge(); notify("Your apps are up to date" if ok else "Some apps couldn't be updated")
+            if self.section == "updates": self.show_list()
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+def notify(text):
+    try: subprocess.Popen(["notify-send", "-a", "App Store", "-i", "summit-appstore", text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError: pass
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.summitos.AppStore", flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.win = None; self.pending_show = None; self.pending_updates = False
+    def do_command_line(self, cl):
+        args = cl.get_arguments()[1:]
+        if "--show" in args and args.index("--show") + 1 < len(args): self.pending_show = args[args.index("--show") + 1]
+        self.pending_updates = "--updates" in args
+        if self.win is None: self.win = Store(self)
+        else:
+            if self.pending_show and self.pending_show in self.win.by_id: self.win.show_detail(self.win.by_id[self.pending_show])
+        self.win.present()
+        return 0
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))
