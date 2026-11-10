@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Summit Gestures
+Comment=Magic Mouse and trackpad gestures, like macOS
+Exec=summit-gestures
+NoDisplay=true
+X-XFCE-Autostart-Override=true

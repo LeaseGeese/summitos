@@ -62,6 +62,9 @@ if [ "$1" != "--login" ] && [ -n "$DISPLAY" ]; then
     for i in $(seq 1 60); do [ -s "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)" ] && break; sleep 0.25; done
     restart plank -x; launch plank
   fi
+  if touched 'usr/local/bin/summit-gestures'; then
+    pkill -u "$(id -u)" -f "^/usr/bin/python3 /usr/local/bin/summit-gestures"; launch summit-gestures   # mouse/trackpad gestures
+  fi
   if touched 'usr/local/lib/summitos/summit-wm-helper'; then
     pkill -u "$(id -u)" -f "^/usr/local/lib/summitos/summit-wm-helper"; launch /usr/local/lib/summitos/summit-wm-helper   # full-screen green button
   fi

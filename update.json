@@ -1,11 +1,11 @@
 {
-  "version": "1.23.3",
-  "build": 12303,
+  "version": "1.24.0",
+  "build": 12400,
   "restart": "session",
   "notes": [
-    "The green button now makes windows full screen like macOS, covering the menu bar and dock; push the pointer to the top edge for the title bar and traffic lights, or press Control+Command+F",
-    "Minimising now shrinks windows down into the dock, and they grow back out when you reopen them",
-    "Full-screen windows no longer flash when they open, close or show the title bar"
+    "Gestures: on a Magic Mouse swipe one finger to go back or forward a page, swipe two fingers to switch apps, and double-tap with two fingers for Launchpad",
+    "On a trackpad: three-finger swipes switch apps, three fingers up opens Launchpad and down shows the desktop, two-finger swipes go back and forward",
+    "Adds support for the newest USB-C Magic Mouse (scrolling and gestures)"
   ],
   "apt": {
     "install": [

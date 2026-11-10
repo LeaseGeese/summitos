@@ -1,0 +1,3 @@
+# Summit OS: the person at the computer may read their own Apple mouse / trackpad touch surface
+# (summit-gestures turns swipes into back/forward, switching apps and Launchpad)
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*Magic Mouse*|*Magic Trackpad*|*bcm5974*|*Touchpad*|*TouchPad*|*Trackpad*", TAG+="uaccess"

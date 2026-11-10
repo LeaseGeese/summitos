@@ -13,6 +13,19 @@ systemctl start summit-tune.service >/dev/null 2>&1 || true
 if [ "${SUMMIT_LIVE:-0}" != 1 ] && [ -f /boot/grub/grub.cfg ] && ! grep -q "preempt=full" /boot/grub/grub.cfg; then
   update-grub >/dev/null 2>&1 || true
 fi
+# Magic Mouse driver with USB-C Magic Mouse support (Linux 6.16 backport), rebuilt automatically for new kernels
+MM=summit-magicmouse; MMV=6.16
+if [ "${SUMMIT_LIVE:-0}" != 1 ] && [ -d /usr/src/$MM-$MMV ] && command -v dkms >/dev/null; then
+  if ! dkms status -m $MM -v $MMV -k "$(uname -r)" 2>/dev/null | grep -q installed; then
+    dkms status -m $MM -v $MMV 2>/dev/null | grep -q . || dkms add -m $MM -v $MMV >/dev/null 2>&1
+    if dkms install -m $MM -v $MMV >/dev/null 2>&1; then
+      modprobe -r hid_magicmouse 2>/dev/null; modprobe hid_magicmouse 2>/dev/null || true
+    fi
+  fi
+fi
+# touch surfaces readable for gestures (applies to devices already connected too)
+udevadm control --reload >/dev/null 2>&1 || true
+udevadm trigger --action=change --subsystem-match=input >/dev/null 2>&1 || true
 # make sure the drive starts on a Mac through the generic "EFI Boot" path (fixes 1.0–1.21 installs)
 [ "${SUMMIT_LIVE:-0}" = 1 ] || /usr/local/sbin/summit-efi-sync || true
 exit 0
