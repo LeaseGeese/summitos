@@ -27,7 +27,8 @@ for f in $(find overlay -name "*.py" -o -path "*/bin/summit-*" -o -path "*/sbin/
 done
 V=$(python3 -c 'import json;print(json.load(open("update.json"))["version"])')
 git add -A
-git commit -q -m "Summit OS $V: $1"
+TRAILER="${SUMMIT_COMMIT_TRAILER_FILE:-$HOME/.summit-commit-trailer}"       # optional extra lines for the commit message
+if [ -f "$TRAILER" ]; then git commit -q -m "Summit OS $V: $1" -m "$(cat "$TRAILER")"; else git commit -q -m "Summit OS $V: $1"; fi
 # push with the token kept outside the repository (never written to git config)
 TOKEN_FILE="${SUMMIT_TOKEN_FILE:-$HOME/.summit-gh-token}"
 if [ -f "$TOKEN_FILE" ]; then

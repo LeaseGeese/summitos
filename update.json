@@ -1,9 +1,10 @@
 {
-  "version": "1.24.1",
-  "build": 12401,
+  "version": "1.24.2",
+  "build": 12402,
   "restart": "session",
   "notes": [
-    "Diagnostics now include Bluetooth and mouse details, to help sort out Magic Mouse connection problems"
+    "New Bluetooth page in Settings: one Connect button pairs, trusts and connects a mouse, keyboard, trackpad or headphones, with plain-language help when something goes wrong and a Pair Again button for devices last used with another computer",
+    "Magic Mouse: reconnects faster after sleep, no accidental middle-clicks, and scrolling that speeds up with your swipe"
   ],
   "apt": {
     "install": [

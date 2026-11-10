@@ -661,7 +661,6 @@ class AboutPage(Gtk.Box):
 MORE = [("Displays", "preferences-desktop-display", ["xfce4-display-settings"]),
         ("Sound", "multimedia-volume-control", ["pavucontrol"]),
         ("Network", "preferences-system-network", ["nm-connection-editor"]),
-        ("Bluetooth", "bluetooth", ["blueman-manager"]),
         ("Keyboard", "preferences-desktop-keyboard", ["xfce4-keyboard-settings"]),
         ("Mouse & Trackpad", "preferences-desktop-peripherals", ["xfce4-mouse-settings"]),
         ("Power & Screen Saver", "preferences-system-power", ["xfce4-power-manager-settings"]),
@@ -669,7 +668,8 @@ MORE = [("Displays", "preferences-desktop-display", ["xfce4-display-settings"]),
 
 class Settings(Gtk.Window):
     PAGES = [("appearance", "Appearance", "preferences-desktop-theme"), ("storage", "Storage", "drive-harddisk"),
-             ("sharing", "Sharing", "folder-remote"), ("update", "Software Update", "summit-update"),
+             ("sharing", "Sharing", "folder-remote"), ("bluetooth", "Bluetooth", "bluetooth"),
+             ("update", "Software Update", "summit-update"),
              ("about", "About This iMac", "summitos")]
     def __init__(self, page="appearance"):
         super().__init__(title="Settings")
@@ -715,7 +715,10 @@ class Settings(Gtk.Window):
         if not row: return
         k = row.key
         if k not in self.built:
-            page = {"appearance": AppearancePage, "storage": StoragePage, "sharing": SharingPage, "update": UpdatePage, "about": AboutPage}[k]()
+            if k == "bluetooth":
+                import summit_bluetooth; page = summit_bluetooth.BluetoothPage()      # loaded only when opened
+            else:
+                page = {"appearance": AppearancePage, "storage": StoragePage, "sharing": SharingPage, "update": UpdatePage, "about": AboutPage}[k]()
             wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); wrap.set_margin_start(28); wrap.set_margin_end(28); wrap.set_margin_top(22)
             wrap.pack_start(page, False, False, 0)
             self.stack.add_named(wrap, k); wrap.show_all(); self.built[k] = wrap

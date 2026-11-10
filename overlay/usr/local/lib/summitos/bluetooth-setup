@@ -1,0 +1,29 @@
+#!/usr/bin/python3
+"""Summit OS Bluetooth settings (run as root by updates and when the system image is built).
+Edits /etc/bluetooth/main.conf in place, keeping everything else in it:
+  FastConnectable = true   mice, keyboards and trackpads reconnect in about a second after waking,
+                           instead of several (the adapter listens for them more often)
+Prints "changed" if the file was changed (the Bluetooth service then needs a restart)."""
+import re, sys
+PATH = "/etc/bluetooth/main.conf"
+WANT = {("General", "FastConnectable"): "true"}
+try: text = open(PATH).read()
+except OSError: sys.exit(0)
+out, section, done = [], None, set()
+for line in text.splitlines():
+    m = re.match(r"\s*\[(\w+)\]", line)
+    if m:
+        for (sec, key), val in WANT.items():          # leaving a section: add what it still lacks
+            if sec == section and (sec, key) not in done: out.append(f"{key} = {val}"); done.add((sec, key))
+        section = m.group(1)
+    k = re.match(r"\s*#?\s*(\w+)\s*=", line)
+    if k and (section, k.group(1)) in WANT and (section, k.group(1)) not in done:
+        key = k.group(1); line = f"{key} = {WANT[(section, key)]}"; done.add((section, key))
+    out.append(line)
+for (sec, key), val in WANT.items():
+    if (sec, key) not in done:
+        if section != sec: out.append(f"[{sec}]"); section = sec
+        out.append(f"{key} = {val}")
+new = "\n".join(out) + "\n"
+if new != text:
+    open(PATH, "w").write(new); print("changed")

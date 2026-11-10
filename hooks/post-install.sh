@@ -23,6 +23,14 @@ if [ "${SUMMIT_LIVE:-0}" != 1 ] && [ -d /usr/src/$MM-$MMV ] && command -v dkms >
     fi
   fi
 fi
+# Magic Mouse options (/usr/lib/modprobe.d/summit-magicmouse.conf) for a driver that is already loaded
+for kv in emulate_3button=N scroll_acceleration=Y; do
+  f=/sys/module/hid_magicmouse/parameters/${kv%%=*}; [ -w "$f" ] && echo "${kv#*=}" > "$f" 2>/dev/null || true
+done
+# Bluetooth: quicker reconnects for mice, keyboards and trackpads (see bluetooth-setup)
+if [ "$(/usr/local/lib/summitos/bluetooth-setup 2>/dev/null)" = changed ]; then
+  systemctl try-restart bluetooth.service >/dev/null 2>&1 || true
+fi
 # touch surfaces readable for gestures (applies to devices already connected too)
 udevadm control --reload >/dev/null 2>&1 || true
 udevadm trigger --action=change --subsystem-match=input >/dev/null 2>&1 || true

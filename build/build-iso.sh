@@ -55,6 +55,7 @@ install -d -o lightdm -g lightdm /var/lib/lightdm/.config/gtk-3.0
 ln -sf /usr/share/summitos/greeter/gtk.css /var/lib/lightdm/.config/gtk-3.0/gtk.css
 python3 /usr/local/lib/summitos/make-icon-themes
 for t in /usr/share/icons/Summit-* /usr/share/icons/hicolor; do gtk-update-icon-cache -q -f "$t" || true; done
+/usr/local/lib/summitos/bluetooth-setup >/dev/null || true
 dconf update; update-desktop-database -q /usr/share/applications || true
 plymouth-set-default-theme summit || true
 systemctl enable mbpfan zramswap NetworkManager lightdm avahi-daemon earlyoom summit-update.timer summit-tune.service 2>/dev/null || true
