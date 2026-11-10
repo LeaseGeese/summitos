@@ -24,7 +24,7 @@ echo "tuning: cpu floor $(cat /sys/devices/system/cpu/intel_pstate/min_perf_pct 
 echo
 echo "--- load"
 uptime | sed 's/.*load/load/'
-echo "cpu MHz: $(awk -F: '/MHz/{s+=$2;n++} END{if(n) printf "%d", s/n}' /proc/cpuinfo)  governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)  temp: $(( $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1) / 1000 ))C"
+echo "cpu MHz: $(awk -F: '/MHz/{s+=$2;n++} END{if(n) printf "%d", s/n}' /proc/cpuinfo)  governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)  temp: $(( $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1 | grep . || echo 0) / 1000 ))C"
 ps -eo pcpu,rss,comm --sort=-pcpu | head -9 | awk 'NR==1{print "  %CPU  MB  PROCESS"; next}{printf "  %4s %4d  %s\n", $1, $2/1024, $3}'
 free -m | awk '/Mem:/{print "memory used: "$3" MB of "$2" MB"} /Swap:/{print "swap used: "$3" MB"}'
 echo
@@ -38,6 +38,17 @@ echo "theme: $(xfconf-query -c xsettings -p /Net/ThemeName)  icons: $(xfconf-que
 ACC=$(python3 -c 'import json;print(json.load(open("'"$HOME"'/.config/summit/appearance.json")).get("accent","blue"))' 2>/dev/null || echo blue)
 S=$(date +%s%N); ERR=$(SUMMIT_APPEARANCE_LOCAL=1 timeout 120 summit-appearance set accent="$ACC" 2>&1 | tail -3); E=$(date +%s%N)
 echo "re-applying accent '$ACC' took $(( (E - S) / 1000000 )) ms ${ERR:+error: $ERR}"
+echo
+echo "--- bluetooth & mouse"
+rfkill list bluetooth 2>/dev/null | grep -E "Soft|Hard" | xargs
+timeout 4 bluetoothctl show 2>/dev/null | grep -E "Powered|Pairable|Discoverable" | xargs; [ -e /sys/class/bluetooth/hci0 ] || echo "no Bluetooth adapter found"
+for d in $(timeout 4 bluetoothctl devices 2>/dev/null | awk '{print $2}'); do
+  timeout 4 bluetoothctl info "$d" 2>/dev/null | grep -E "Name|Paired|Bonded|Trusted|Connected|Modalias" | xargs | cut -c1-200
+done
+echo "magic mouse driver: $(modinfo -n hid_magicmouse 2>/dev/null)  loaded: $(lsmod | grep -c hid_magicmouse)  dkms: $(dkms status summit-magicmouse 2>/dev/null | tr '\n' ' ')"
+grep -iE "magic|05ac|004c" /proc/bus/input/devices 2>/dev/null | head -4
+journalctl -k -b --no-pager -q 2>/dev/null | grep -iE "magicmouse|hid.*apple|bluetooth.*(fail|error)" | tail -n 6 | cut -c17-180
+journalctl -u bluetooth -b --no-pager -q 2>/dev/null | grep -iE "fail|error|reject|denied" | grep -v sap | tail -n 6 | cut -c17-180
 echo
 echo "--- recent errors"
 journalctl -b -p err --no-pager -q 2>/dev/null | tail -n 6 | cut -c17-160

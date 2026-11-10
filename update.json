@@ -1,11 +1,9 @@
 {
-  "version": "1.24.0",
-  "build": 12400,
+  "version": "1.24.1",
+  "build": 12401,
   "restart": "session",
   "notes": [
-    "Gestures: on a Magic Mouse swipe one finger to go back or forward a page, swipe two fingers to switch apps, and double-tap with two fingers for Launchpad",
-    "On a trackpad: three-finger swipes switch apps, three fingers up opens Launchpad and down shows the desktop, two-finger swipes go back and forward",
-    "Adds support for the newest USB-C Magic Mouse (scrolling and gestures)"
+    "Diagnostics now include Bluetooth and mouse details, to help sort out Magic Mouse connection problems"
   ],
   "apt": {
     "install": [
