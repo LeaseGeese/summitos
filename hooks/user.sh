@@ -27,4 +27,9 @@ fi
 if xfconf-query -c xfce4-keyboard-shortcuts -l 2>/dev/null | grep -q "^/xfwm4/custom/<Super>q$"; then
   xfconf-query -c xfce4-keyboard-shortcuts -p "/xfwm4/custom/<Primary><Super>f" -n -t string -s fullscreen_key 2>/dev/null
 fi
+# 1.25.1: the desktop portal reads its new settings (light/dark for App Store apps) when it starts
+if [ -f /usr/share/xdg-desktop-portal/xfce-portals.conf ] && [ ! -e "$HOME/.config/summit/portal-1251" ]; then
+  touch "$HOME/.config/summit/portal-1251"
+  systemctl --user try-restart xdg-desktop-portal.service >/dev/null 2>&1
+fi
 exit 0

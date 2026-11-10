@@ -161,6 +161,19 @@ def dock(key, vtype, value):
         txt = ("true" if value else "false") if vtype == "b" else f"'{value}'" if vtype == "s" else str(value)
         run("dconf", "write", PLANK_PATH + key, txt)
 
+def desktop_scheme(dark):
+    """Light or dark for apps that ask the desktop instead of reading the theme: App Store (Flatpak) apps such
+    as Chrome, and newer GTK apps. They ask the desktop portal, and the portal reads this setting."""
+    try:
+        from gi.repository import Gio
+        if Gio.SettingsSchemaSource.get_default().lookup("org.gnome.desktop.interface", True) is None: return
+        st = Gio.Settings.new("org.gnome.desktop.interface")
+        val = "prefer-dark" if dark else "prefer-light"
+        if st.get_string("color-scheme") != val:
+            st.set_string("color-scheme", val); Gio.Settings.sync()
+    except Exception:
+        pass
+
 def dock_sync():
     if _DOCK is not None:
         try:
@@ -508,6 +521,7 @@ def apply(s, restart_compositor=True, changed=None):
     if want("mode"):
         xf("xfwm4", "/general/theme", "string", "Summit-Dark" if dark else "Summit")
         xf("xfce4-notifyd", "/theme", "string", "Summit-Glass-Dark" if dark else "Summit-Glass-Light")
+        desktop_scheme(dark)
     if want("text"):
         xf("xsettings", "/Gtk/FontName", "string", f"Inter {pt:g}")
         xf("xsettings", "/Gtk/MonospaceFontName", "string", f"JetBrains Mono {pt:g}")
