@@ -1,15 +1,18 @@
 {
-  "version": "1.25.1",
-  "build": 12501,
+  "version": "1.26.0",
+  "build": 12600,
   "restart": "session",
   "notes": [
-    "App Store apps such as Chrome, and newer GTK apps, now follow Summit's Light, Dark and Auto appearance (restart the app once to pick it up)"
+    "Momentum scrolling for the Magic Mouse: flick and lift, and the page keeps gliding and slows to a stop like on macOS; touch the mouse to stop it, flick again to go faster",
+    "New Settings → Mouse & Trackpad page: Natural scrolling, Momentum scrolling, Swipe gestures and the green full-screen button, each with its own switch",
+    "New transitions: Control Center drops down from the menu bar, notifications slide in from the right, Spotlight pops in place, and the full-screen bar slides down"
   ],
   "apt": {
     "install": [
       "flatpak",
       "xdg-desktop-portal",
-      "xdg-desktop-portal-gtk"
+      "xdg-desktop-portal-gtk",
+      "xinput"
     ],
     "remove": []
   }

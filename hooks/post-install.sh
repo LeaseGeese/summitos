@@ -44,6 +44,9 @@ fi
 # touch surfaces readable for gestures (applies to devices already connected too)
 udevadm control --reload >/dev/null 2>&1 || true
 udevadm trigger --action=change --subsystem-match=input >/dev/null 2>&1 || true
+# momentum scrolling sends its glide through a virtual scroll device (see 72-summit-uinput.rules)
+modprobe uinput >/dev/null 2>&1 || true
+udevadm trigger --action=change --sysname-match=uinput >/dev/null 2>&1 || true
 # make sure the drive starts on a Mac through the generic "EFI Boot" path (fixes 1.0–1.21 installs)
 [ "${SUMMIT_LIVE:-0}" = 1 ] || /usr/local/sbin/summit-efi-sync || true
 exit 0

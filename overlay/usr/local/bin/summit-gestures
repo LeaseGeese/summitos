@@ -9,20 +9,30 @@ Magic Mouse                                    Trackpad (Magic Trackpad, MacBook
 Back and forward only go to apps with pages (web browsers, Files, code editors). A swipe is ignored if
 you click or move the mouse during it, so ordinary scrolling and pointing never trigger anything.
 
+Momentum scrolling (Magic Mouse): flick and lift, and the page keeps gliding and slows to a stop, as on
+macOS; touching the mouse again stops it. The glide is sent through a small virtual scroll device.
+
 It reads the touch surface directly (the system lets the person at the computer read their own Apple
 mouse and trackpad), sleeps until a finger touches, and notices devices connected later (Bluetooth).
-Turn it off with: touch ~/.config/summit/no-gestures
+Settings → Mouse & Trackpad switches these on and off (files in ~/.config/summit: no-gestures,
+no-momentum, and natural-scroll containing "on" or "off").
 """
-import os, sys, struct, fcntl, select, time, re, subprocess, glob
+import os, sys, struct, fcntl, select, time, re, subprocess, glob, math, threading
+from collections import deque
 
 EV_SYN, EV_KEY, EV_REL, EV_ABS = 0, 1, 2, 3
 ABS_MT_SLOT, ABS_MT_X, ABS_MT_Y, ABS_MT_ID = 0x2f, 0x35, 0x36, 0x39
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE = 0x110, 0x111, 0x112
+REL_HWHEEL, REL_WHEEL, REL_WHEEL_HR, REL_HWHEEL_HR = 6, 8, 0x0b, 0x0c
 EVENT = struct.Struct("llHHi")
 NAV_APPS = ("epiphany", "firefox", "chrom", "brave", "edge", "vivaldi", "opera", "librewolf", "thunar", "nautilus",
             "nemo", "code", "files")
 SKIP_CLASSES = ("xfdesktop", "plank", "xfce4-panel", "summit-shell", "summit-transition", "summit-control-center")
-OFF = os.path.join(os.path.expanduser("~"), ".config", "summit", "no-gestures")
+CFG = os.path.join(os.path.expanduser("~"), ".config", "summit")
+OFF = os.path.join(CFG, "no-gestures")
+NO_GLIDE = os.path.join(CFG, "no-momentum")
+NATURAL = os.path.join(CFG, "natural-scroll")
+GLIDE_NAME = "Summit Smooth Scrolling"
 DEBUG = bool(os.environ.get("SUMMIT_GESTURES_DEBUG"))
 try: SESSION = int(os.environ.get("SUMMIT_SESSION_PID") or 0)     # the desktop session we belong to (set by summit-keep)
 except ValueError: SESSION = 0
@@ -38,18 +48,21 @@ def absinfo(fd, code):
 
 def find_devices():
     """Touch-surface devices: Apple mice and trackpads, and other touchpads, by name."""
-    out = {}
+    out = {}; ALL_NAMES.clear()
     try: text = open("/proc/bus/input/devices").read()
     except OSError: return out
     for block in text.split("\n\n"):
         name = re.search(r'N: Name="([^"]*)"', block); ev = re.search(r"H: Handlers=.*?\b(event\d+)", block)
         if not name or not ev: continue
-        n = name.group(1)
+        n = name.group(1); ALL_NAMES.add(n)
+        if n == GLIDE_NAME: continue
         if re.search(r"Magic Mouse", n, re.I): kind = "mouse"
         elif re.search(r"Magic Trackpad|bcm5974|touchpad|trackpad", n, re.I): kind = "pad"
         else: continue
         out["/dev/input/" + ev.group(1)] = (kind, n)
     return out
+
+ALL_NAMES = set()
 
 def sh(*cmd, out=False):
     try:
@@ -79,8 +92,8 @@ def active_class():
 # ------------------------------------------------------------------ actions
 def back_forward(back):
     cls = active_class()
-    if not any(a in cls for a in NAV_APPS): return
-    sh("xdotool", "key", "--clearmodifiers", "alt+Left" if back else "alt+Right")
+    if not any(a in cls for a in NAV_APPS): return False
+    sh("xdotool", "key", "--clearmodifiers", "alt+Left" if back else "alt+Right"); return True
 
 def switch_app(step):
     """Apps in the order they were opened, like full-screen apps side by side on a Mac."""
@@ -96,6 +109,107 @@ def show_desktop():
     showing = "ON" in sh("wmctrl", "-m", out=True).split("showing the desktop")[-1][:8]
     sh("wmctrl", "-k", "off" if showing else "on")
 
+# ------------------------------------------------------------------ momentum scrolling
+class Glide:
+    """Keeps the page moving after a flick and slows it to a stop. Sends fine-grained scroll steps through a
+    virtual device, so every app sees ordinary (smooth) scrolling."""
+    TAU = 0.38            # seconds for the speed to fall to about a third: a long, soft landing
+    MIN_START = 700       # slower flicks than this (scroll units per second; 120 = one wheel notch) don't glide
+    MIN_SPEED = 80        # the glide ends below this
+    MAX_SPEED = 9000
+
+    def __init__(self):
+        self.fd = None; self.failed_at = 0; self.active = False
+        self.v = [0.0, 0.0]; self.acc = [0.0, 0.0]; self.lo = [0, 0]      # [vertical, horizontal]
+        self.t = self.t0 = 0.0; self.left = [0.0, 0.0]; self.stopped = 0.0
+
+    def ready(self):
+        """Create the virtual scroll device the first time it is needed."""
+        if self.fd is not None: return True
+        if time.monotonic() - self.failed_at < 30: return False
+        try:
+            fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+            for ev in (EV_SYN, EV_KEY, EV_REL): fcntl.ioctl(fd, 0x40045564, ev)             # UI_SET_EVBIT
+            fcntl.ioctl(fd, 0x40045565, BTN_LEFT)                                           # UI_SET_KEYBIT (a mouse)
+            for rel in (0, 1, REL_HWHEEL, REL_WHEEL, REL_WHEEL_HR, REL_HWHEEL_HR): fcntl.ioctl(fd, 0x40045566, rel)
+            fcntl.ioctl(fd, 0x405c5503, struct.pack("HHHH80sI", 0x06, 0x05ac, 0x5355, 1, GLIDE_NAME.encode(), 0))
+            fcntl.ioctl(fd, 0x5501)                                                         # UI_DEV_CREATE
+            self.fd = fd
+            if DEBUG: print("momentum: virtual scroll device ready", flush=True)
+            return True
+        except OSError as e:
+            self.failed_at = time.monotonic()
+            if DEBUG: print("momentum: can't create the scroll device:", e, flush=True)
+            return False
+
+    def emit(self, events):
+        now = time.time(); sec = int(now); usec = int((now - sec) * 1e6)
+        data = b"".join(EVENT.pack(sec, usec, EV_REL, code, val) for code, val in events) + EVENT.pack(sec, usec, EV_SYN, 0, 0)
+        try: os.write(self.fd, data)
+        except OSError: self.active = False
+
+    def start(self, vy, vx):
+        if os.path.exists(NO_GLIDE) or not self.ready(): return
+        now = time.monotonic()
+        v = [vy, vx]
+        for i in (0, 1):      # a second flick straight after a glide adds to it, so quick flicks cover long pages
+            if now - self.stopped < 0.45 and v[i] * self.left[i] > 0: v[i] += 0.5 * self.left[i]
+            v[i] = max(-self.MAX_SPEED, min(self.MAX_SPEED, v[i]))
+        self.v = v; self.acc = [0.0, 0.0]; self.lo = [0, 0]; self.t = self.t0 = now; self.active = True
+        if DEBUG: print(f"momentum: glide from {v[0]:+.0f} / {v[1]:+.0f} units/s", flush=True)
+
+    def stop(self):
+        """A finger touched the mouse (or it was clicked or moved): the page stops where it is."""
+        if self.active:
+            self.left = list(self.v); self.stopped = time.monotonic(); self.active = False
+
+    def step(self):
+        now = time.monotonic(); dt = min(0.05, now - self.t); self.t = now
+        events = []
+        for i, (hr, lo) in enumerate(((REL_WHEEL_HR, REL_WHEEL), (REL_HWHEEL_HR, REL_HWHEEL))):
+            self.acc[i] += self.v[i] * dt
+            n = int(self.acc[i]); self.acc[i] -= n
+            if n:
+                events.append((hr, n)); self.lo[i] += n
+                whole = int(self.lo[i] / 120)                      # apps without smooth scrolling use whole notches
+                if whole: events.append((lo, whole)); self.lo[i] -= whole * 120
+            self.v[i] *= math.exp(-dt / self.TAU)
+        if events: self.emit(events)
+        if max(abs(self.v[0]), abs(self.v[1])) < self.MIN_SPEED or now - self.t0 > 3.0: self.active = False
+
+GLIDE = Glide()
+
+def pointer_settings():
+    """Scroll direction. With a choice made in Settings (natural-scroll = on/off), every mouse and trackpad
+    follows it. Without one, nothing is changed and the glide device simply copies the Magic Mouse."""
+    def prop(text):
+        m = re.search(r"libinput Natural Scrolling Enabled \(\d+\):\s*(\d)", text)
+        return m.group(1) if m else None
+    try: want = {"on": "1", "off": "0"}.get(open(NATURAL).read().strip())
+    except OSError: want = None
+    mouse = None; glide_id = None
+    for dev in sh("xinput", "list", "--id-only", out=True).split():
+        text = sh("xinput", "list-props", dev, out=True); cur = prop(text)
+        if cur is None: continue
+        name = text.split("\n", 1)[0]
+        if want is not None:
+            if cur != want: sh("xinput", "set-prop", dev, "libinput Natural Scrolling Enabled", want)
+        elif GLIDE_NAME in name: glide_id = (dev, cur)
+        elif "Magic Mouse" in name: mouse = cur
+    if want is None and glide_id and mouse is not None and glide_id[1] != mouse:
+        sh("xinput", "set-prop", glide_id[0], "libinput Natural Scrolling Enabled", mouse)
+
+_settings_state = [None, 0.0]
+def pointer_settings_if_changed(force=False):
+    """Apply the scroll direction when a device was connected, the choice changed, or (for the copy) now and then."""
+    try: mark = os.path.getmtime(NATURAL)
+    except OSError: mark = 0
+    state = (frozenset(ALL_NAMES), mark)
+    if not force and state == _settings_state[0]: return
+    if force and time.monotonic() - _settings_state[1] < 20: return
+    _settings_state[0] = state; _settings_state[1] = time.monotonic()
+    threading.Thread(target=pointer_settings, daemon=True).start()
+
 # ------------------------------------------------------------------ gesture tracking
 class Surface:
     def __init__(self, path, kind):
@@ -105,6 +219,8 @@ class Surface:
         self.w = max(1, self.xr[1] - self.xr[0]); self.h = max(1, self.yr[1] - self.yr[0])
         self.slot = 0; self.touch = {}          # slot -> [x, y, x0, y0]
         self.last = {}                          # slot -> [x, y]: the kernel only sends values that changed
+        self.wheel = deque(maxlen=96)           # recent scroll steps from the mouse: (time, axis, amount)
+        self.now = 0.0                          # time of the event being read
         self.reset(); self.last_tap = (0.0, 0)
 
     def reset(self):
@@ -117,7 +233,8 @@ class Surface:
     def read(self):
         data = os.read(self.fd, EVENT.size * 64)
         for i in range(0, len(data) - EVENT.size + 1, EVENT.size):
-            _, _, typ, code, val = EVENT.unpack_from(data, i)
+            sec, usec, typ, code, val = EVENT.unpack_from(data, i)
+            self.now = sec + usec / 1e6
             if typ == EV_ABS:
                 if code == ABS_MT_SLOT: self.slot = val
                 elif code == ABS_MT_ID:
@@ -134,8 +251,11 @@ class Surface:
                         if t[k + 2] is None: t[k + 2] = val
             elif typ == EV_REL and code in (0, 1):
                 self.moved += abs(val)                       # the mouse itself is moving: pointing, not swiping
+                if self.moved > 60: GLIDE.stop()
+            elif typ == EV_REL and code in (REL_WHEEL_HR, REL_HWHEEL_HR):
+                self.wheel.append((self.now, code, val))
             elif typ == EV_KEY and code in (BTN_LEFT, BTN_RIGHT, BTN_MIDDLE) and val == 1:
-                self.clicked = True
+                self.clicked = True; GLIDE.stop()
             elif typ == EV_SYN and code == 0:
                 self.frame()
 
@@ -143,12 +263,15 @@ class Surface:
         n = len(self.touch)
         if n and not self.active:
             self.active = True; self.t0 = time.monotonic(); self.moved = 0; self.clicked = False
+            GLIDE.stop(); self.wheel.clear()                   # a finger on the mouse stops a glide
         if not self.active: return
         if n > self.fingers:                                   # more fingers landed: measure from here
             self.fingers = n
             for t in self.touch.values(): t[2], t[3] = t[0], t[1]
         if n == 0:
-            self.finish(); self.reset()
+            acted = self.finish()
+            if self.kind == "mouse" and not acted: self.glide()
+            self.reset()
         else:
             # movement of each finger since it (or the last finger) landed; an axis the device never
             # reported has simply not moved
@@ -157,33 +280,50 @@ class Surface:
 
     def finish(self):
         dur = time.monotonic() - self.t0
-        if self.clicked or os.path.exists(OFF): return
+        if self.clicked or os.path.exists(OFF): return False
         moves = list(getattr(self, "end", {}).values())
-        if not moves: return
+        if not moves: return False
         dx = sum(m[0] for m in moves) / len(moves) / self.w
         dy = sum(m[1] for m in moves) / len(moves) / self.h
         f = self.fingers
         horiz = abs(dx) > 2.2 * abs(dy); vert = abs(dy) > 2.2 * abs(dx)
         if DEBUG: print(f"{self.kind}: {f} finger(s) dx={dx:+.2f} dy={dy:+.2f} {dur:.2f}s moved={self.moved}", flush=True)
         if self.kind == "mouse":
-            if self.moved > 60: return                          # moving the mouse, not swiping
+            if self.moved > 60: return False                    # moving the mouse, not swiping
             if f == 1 and dur < 0.45 and abs(dx) > 0.30 and horiz:
-                back_forward(back=dx > 0)                       # finger moves right: back, like a page turn
+                return back_forward(back=dx > 0)                # finger moves right: back, like a page turn
             elif f == 2 and dur < 0.8 and abs(dx) > 0.22 and horiz:
-                switch_app(1 if dx < 0 else -1)                 # swipe left: the app to the right
+                switch_app(1 if dx < 0 else -1); return True    # swipe left: the app to the right
             elif f == 2 and dur < 0.25 and abs(dx) < 0.05 and abs(dy) < 0.05:
                 now = time.monotonic()
                 if now - self.last_tap[0] < 0.45 and self.last_tap[1] == 2:
                     self.last_tap = (0.0, 0); launchpad()
                 else:
                     self.last_tap = (now, 2)
+                return True
         else:
             if f >= 3 and dur < 1.0 and abs(dx) > 0.18 and horiz:
-                switch_app(1 if dx < 0 else -1)
+                switch_app(1 if dx < 0 else -1); return True
             elif f >= 3 and dur < 1.0 and abs(dy) > 0.18 and vert:
-                launchpad() if dy < 0 else show_desktop()
+                launchpad() if dy < 0 else show_desktop(); return True
             elif f == 2 and dur < 0.5 and abs(dx) > 0.35 and horiz:
-                back_forward(back=dx > 0)
+                return back_forward(back=dx > 0)
+        return False
+
+    def glide(self):
+        """One finger flicked and lifted while the page was still moving: let it glide on."""
+        recent = [w for w in self.wheel if self.now - w[0] <= 0.12]
+        self.wheel.clear()
+        if self.clicked or self.moved > 60 or self.fingers != 1 or len(recent) < 3: return
+        if self.now - recent[-1][0] > 0.07: return             # the finger rested before lifting: stay put
+        span = max(0.04, recent[-1][0] - recent[0][0]) + 0.012
+        vy = sum(v for _, c, v in recent if c == REL_WHEEL_HR) / span
+        vx = sum(v for _, c, v in recent if c == REL_HWHEEL_HR) / span
+        if abs(vy) >= abs(vx): vx = 0.0
+        else: vy = 0.0
+        if DEBUG: print(f"mouse: lift at {vy:+.0f} / {vx:+.0f} units/s", flush=True)
+        if max(abs(vy), abs(vx)) >= Glide.MIN_START:
+            GLIDE.start(vy, vx); pointer_settings_if_changed(force=True)
 
 def main():
     surfaces = {}; next_scan = 0
@@ -201,12 +341,15 @@ def main():
                 except OSError as e:                            # no permission, or not a touch surface
                     if DEBUG: print("can't use", p, name, e, flush=True)
             next_scan = time.monotonic() + 4
+            if any(s.kind == "mouse" for s in surfaces.values()): GLIDE.ready()   # so the first flick already glides
+            pointer_settings_if_changed()
         if not surfaces:
             time.sleep(4); continue
         try:
-            ready, _, _ = select.select([s.fd for s in surfaces.values()], [], [], 4)
+            ready, _, _ = select.select([s.fd for s in surfaces.values()], [], [], 0.008 if GLIDE.active else 4)
         except (OSError, ValueError):
             next_scan = 0; continue
+        if GLIDE.active: GLIDE.step()
         for s in list(surfaces.values()):
             if s.fd in ready:
                 try: s.read()

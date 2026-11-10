@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 """Summit Settings: Appearance, Storage, Sharing and About in one window.
-   summit-settings [--page appearance|storage|sharing|about] [--welcome]"""
+   summit-settings [--page appearance|storage|mouse|sharing|bluetooth|update|about] [--welcome]"""
 import os, sys, json, socket, subprocess, threading, shutil, re, time
 import gi
 gi.require_version("Gtk", "3.0")
@@ -491,6 +491,52 @@ class SharingPage(Gtk.Box):
         subprocess.Popen(["barrier"], start_new_session=True); return True
     def toggle_ssh(self, on): return self.helper("ssh-on" if on else "ssh-off")
 
+# ======================================================================= Mouse & Trackpad
+class MousePage(Gtk.Box):
+    """Scrolling and gestures. Each switch is a small file in ~/.config/summit that summit-gestures (scrolling,
+    swipes) and summit-wm-helper (green button) read, so changes apply at once."""
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.pack_start(card(section("Mouse & Trackpad", "Scrolling and gestures for a Magic Mouse, a Magic Trackpad, or any other mouse.")), False, False, 0)
+        flag = lambda name: os.path.exists(os.path.join(CFG, name))
+        try: natural = open(os.path.join(CFG, "natural-scroll")).read().strip() == "on"
+        except OSError: natural = False
+        scroll = [
+            SwitchRow("input-mouse", "Natural scrolling", "The page follows your finger: swipe up and the content moves up, as on a Mac.", natural, self.set_natural),
+            SwitchRow("input-touchpad", "Momentum scrolling", "Flick on the Magic Mouse and the page glides on, slowing to a stop. Touch the mouse to stop it at once.",
+                      not flag("no-momentum"), lambda on: self.set_flag("no-momentum", not on)),
+        ]
+        more = [
+            SwitchRow("input-tablet", "Swipe gestures", "<b>Magic Mouse:</b> one finger left or right for back and forward, two fingers to switch apps, "
+                      "double-tap with two fingers for Launchpad.\n<b>Trackpad:</b> two fingers for back and forward, three to switch apps, three up for Launchpad, three down for the desktop.",
+                      not flag("no-gestures"), lambda on: self.set_flag("no-gestures", not on)),
+            SwitchRow("view-fullscreen", "Green button fills the screen", "The green window button makes a window full screen, as on a Mac. "
+                      "Off: the window fills the space below the menu bar instead.", not flag("classic-maximize"), lambda on: self.set_flag("classic-maximize", not on)),
+        ]
+        for title, rows in (("Scrolling", scroll), ("Gestures and windows", more)):
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            box.pack_start(label(f"<b>{title}</b>", markup=True), False, False, 0)
+            for i, r in enumerate(rows):
+                if i: box.pack_start(Gtk.Separator(), False, False, 0)
+                box.pack_start(r, False, False, 0)
+            self.pack_start(card(box), False, False, 0)
+        b = Gtk.Button(label="Pointer Speed and Buttons…", halign=Gtk.Align.START)
+        b.connect("clicked", lambda *_: subprocess.Popen(["xfce4-mouse-settings"]))
+        self.pack_start(card(section("More options", "Tracking speed, double-click speed and left-handed buttons."), b), False, False, 0)
+
+    def set_flag(self, name, on):
+        p = os.path.join(CFG, name); os.makedirs(CFG, exist_ok=True)
+        try:
+            if on: open(p, "w").close()
+            elif os.path.exists(p): os.remove(p)
+        except OSError: return False
+
+    def set_natural(self, on):
+        os.makedirs(CFG, exist_ok=True)
+        try:
+            with open(os.path.join(CFG, "natural-scroll"), "w") as f: f.write("on" if on else "off")
+        except OSError: return False
+
 # ======================================================================= Software Update
 UPD = "/var/lib/summit-update"
 def upd_json(name):
@@ -662,12 +708,12 @@ MORE = [("Displays", "preferences-desktop-display", ["xfce4-display-settings"]),
         ("Sound", "multimedia-volume-control", ["pavucontrol"]),
         ("Network", "preferences-system-network", ["nm-connection-editor"]),
         ("Keyboard", "preferences-desktop-keyboard", ["xfce4-keyboard-settings"]),
-        ("Mouse & Trackpad", "preferences-desktop-peripherals", ["xfce4-mouse-settings"]),
         ("Power & Screen Saver", "preferences-system-power", ["xfce4-power-manager-settings"]),
         ("All Settings", "preferences-system", ["xfce4-settings-manager"])]
 
 class Settings(Gtk.Window):
     PAGES = [("appearance", "Appearance", "preferences-desktop-theme"), ("storage", "Storage", "drive-harddisk"),
+             ("mouse", "Mouse & Trackpad", "preferences-desktop-peripherals"),
              ("sharing", "Sharing", "folder-remote"), ("bluetooth", "Bluetooth", "bluetooth"),
              ("update", "Software Update", "summit-update"),
              ("about", "About This iMac", "summitos")]
@@ -718,7 +764,7 @@ class Settings(Gtk.Window):
             if k == "bluetooth":
                 import summit_bluetooth; page = summit_bluetooth.BluetoothPage()      # loaded only when opened
             else:
-                page = {"appearance": AppearancePage, "storage": StoragePage, "sharing": SharingPage, "update": UpdatePage, "about": AboutPage}[k]()
+                page = {"appearance": AppearancePage, "storage": StoragePage, "mouse": MousePage, "sharing": SharingPage, "update": UpdatePage, "about": AboutPage}[k]()
             wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); wrap.set_margin_start(28); wrap.set_margin_end(28); wrap.set_margin_top(22)
             wrap.pack_start(page, False, False, 0)
             self.stack.add_named(wrap, k); wrap.show_all(); self.built[k] = wrap

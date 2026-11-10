@@ -429,6 +429,48 @@ rules = (
        {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 1.05; duration = 0.20; }},
        {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 1.05; duration = 0.14; }}
      ); }},
+  # Spotlight pops in place (it must never use the minimise-to-dock motion when it hides)
+  {{ match = "class_g = 'Summit-shell' && name = 'Spotlight'";
+     animations = (
+       {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 0.97; duration = 0.13; }},
+       {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 0.98; duration = 0.10; }}
+     ); }},
+  # Control Center drops down from the menu bar and lifts back up
+  {{ match = "class_g = 'Summit-control-center'";
+     animations = (
+       {{ triggers = [ "open", "show" ];
+          opacity = {{ curve = "cubic-bezier(0.2, 0.8, 0.3, 1.0)"; duration = 0.16; start = 0; end = "window-raw-opacity"; }};
+          offset-y = {{ curve = "cubic-bezier(0.2, 0.8, 0.3, 1.0)"; duration = 0.20; start = -16; end = 0; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity"; shadow-offset-y = "offset-y"; }},
+       {{ triggers = [ "close", "hide" ];
+          opacity = {{ curve = "cubic-bezier(0.4, 0.0, 1.0, 1.0)"; duration = 0.12; start = "window-raw-opacity-before"; end = 0; }};
+          offset-y = {{ curve = "cubic-bezier(0.4, 0.0, 1.0, 1.0)"; duration = 0.12; start = 0; end = -12; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity"; shadow-offset-y = "offset-y"; }}
+     ); }},
+  # notifications slide in from the right edge and slide back out
+  {{ match = "window_type = 'notification' && class_g != 'Summit-transition'";
+     animations = (
+       {{ triggers = [ "open", "show" ];
+          opacity = {{ curve = "cubic-bezier(0.2, 0.8, 0.3, 1.0)"; duration = 0.20; start = 0; end = "window-raw-opacity"; }};
+          offset-x = {{ curve = "cubic-bezier(0.2, 0.8, 0.3, 1.0)"; duration = 0.26; start = 48; end = 0; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity"; shadow-offset-x = "offset-x"; }},
+       {{ triggers = [ "close", "hide" ];
+          opacity = {{ curve = "cubic-bezier(0.4, 0.0, 1.0, 1.0)"; duration = 0.16; start = "window-raw-opacity-before"; end = 0; }};
+          offset-x = {{ curve = "cubic-bezier(0.4, 0.0, 1.0, 1.0)"; duration = 0.16; start = 0; end = 36; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity"; shadow-offset-x = "offset-x"; }}
+     ); }},
+  # the full-screen bar (traffic lights) slides down from the top edge
+  {{ match = "class_g = 'Summit-shell' && name = 'Full Screen Bar'";
+     animations = (
+       {{ triggers = [ "open", "show" ];
+          opacity = {{ duration = 0.12; start = 0; end = "window-raw-opacity"; }};
+          offset-y = {{ curve = "cubic-bezier(0.2, 0.8, 0.3, 1.0)"; duration = 0.16; start = -30; end = 0; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity"; }},
+       {{ triggers = [ "close", "hide" ];
+          opacity = {{ duration = 0.10; start = "window-raw-opacity-before"; end = 0; }};
+          offset-y = {{ duration = 0.10; start = 0; end = -24; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity"; }}
+     ); }},
   # full-screen windows stay composited (switching the bypass on and off flashes on Intel graphics);
   # only video players, games and the AirPlay picture skip the compositor for the lowest latency
   {{ match = "!(name = '{socket.gethostname()}' || class_g = 'mpv' || class_g = 'vlc' || class_g *= 'steam_app' || class_g = 'Totem')"; unredir = false; }},

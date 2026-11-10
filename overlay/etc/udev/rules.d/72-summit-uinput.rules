@@ -1,0 +1,3 @@
+# Summit OS: the person at the computer may create a virtual input device. summit-gestures uses one to
+# send momentum scrolling (the glide after a Magic Mouse flick), as ordinary fine-grained scroll steps.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

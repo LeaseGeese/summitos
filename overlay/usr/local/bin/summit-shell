@@ -40,7 +40,7 @@ SETTINGS_PAGES = [("Appearance", "Dark mode, accent colour, wallpaper, glass, te
 # System panels that are hidden from Launchpad but still worth finding by name
 SYSTEM_PANELS = [("Displays", "Resolution, arrangement, scaling", ["xfce4-display-settings"], "preferences-desktop-display"),
                  ("Keyboard", "Shortcuts, layout, key repeat", ["xfce4-keyboard-settings"], "preferences-desktop-keyboard"),
-                 ("Mouse & Trackpad", "Pointer speed, scrolling, clicking", ["xfce4-mouse-settings"], "preferences-desktop-peripherals"),
+                 ("Mouse & Trackpad", "Scrolling, momentum, gestures, pointer speed", ["summit-settings", "--page", "mouse"], "preferences-desktop-peripherals"),
                  ("Network", "Wi-Fi, Ethernet, VPN connections", ["nm-connection-editor"], "preferences-system-network"),
                  ("Power & Screen Saver", "Sleep, display off, power button", ["xfce4-power-manager-settings"], "preferences-system-power"),
                  ("Notifications", "Banners, position, Do Not Disturb", ["xfce4-notifyd-config"], "preferences-system-notifications"),
