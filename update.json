@@ -1,10 +1,14 @@
 {
-  "version": "1.24.2",
-  "build": 12402,
+  "version": "1.25.0",
+  "build": 12500,
   "restart": "session",
   "notes": [
-    "New Bluetooth page in Settings: one Connect button pairs, trusts and connects a mouse, keyboard, trackpad or headphones, with plain-language help when something goes wrong and a Pair Again button for devices last used with another computer",
-    "Magic Mouse: reconnects faster after sleep, no accidental middle-clicks, and scrolling that speeds up with your swipe"
+    "Self-healing desktop: the Dock, Spotlight/Launchpad, the glass effects, gestures and full screen are each watched by a keeper that starts them again within a second if they ever stop, instead of staying gone until the next login",
+    "Faster startup: the login screen and desktop no longer wait for Wi-Fi/Ethernet to come up (applies from the next restart)",
+    "Window animations can no longer be lost for good after logging out or one bad start; an earlier wrongly-disabled state repairs itself",
+    "Updates no longer restart the Dock and Spotlight every time, only when their files changed; the background update check wakes every 30 minutes instead of every 2",
+    "Graphics speed floor is now set the moment the graphics card appears, so it can't be missed at startup; Night Shift and the appearance watcher no longer leave duplicates behind after logging out",
+    "summit-diagnose now reports startup timing and the state of each desktop part"
   ],
   "apt": {
     "install": [

@@ -54,19 +54,29 @@ if [ "$1" != "--login" ] && [ -n "$DISPLAY" ]; then
   if touched 'usr/local/bin/summit-appearance' 'usr/share/themes/*' 'usr/share/icons/*' 'etc/xdg/picom*' 'usr/local/bin/summit-compositor'; then
     summit-appearance apply >/dev/null 2>&1 9>&-                              # styles, colours, compositor
   fi
+  # the desktop's own parts are restarted through their keepers (summit-keep), which also start any that are missing
+  COMP=""
   if touched 'usr/local/bin/summit-compositor' 'usr/local/lib/summitos/picom' 'usr/local/lib/summitos/screen-check'; then
-    pkill -u "$(id -u)" -x summit-composit; pkill -u "$(id -u)" -x picom
-    rm -f "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)"
-    launch summit-compositor                            # new compositor (and its animations) right away
-    # the dock only draws properly if compositing is up when it starts: wait for the compositor, then restart it
-    for i in $(seq 1 60); do [ -s "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)" ] && break; sleep 0.25; done
-    restart plank -x; launch plank
+    COMP=1; rm -f "$HOME/.config/summit/no-picom12"     # a new compositor gets a fresh chance at the animations
+    rm -f "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)" "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-ok-$(id -u)"
   fi
-  if touched 'usr/local/bin/summit-gestures'; then
-    pkill -u "$(id -u)" -f "^/usr/bin/python3 /usr/local/bin/summit-gestures"; launch summit-gestures   # mouse/trackpad gestures
-  fi
-  if touched 'usr/local/lib/summitos/summit-wm-helper'; then
-    pkill -u "$(id -u)" -f "^/usr/local/lib/summitos/summit-wm-helper"; launch /usr/local/lib/summitos/summit-wm-helper   # full-screen green button
+  if touched 'usr/local/bin/summit-keep'; then
+    summit-keep --reload 9>&-                           # new keepers, which start every part afresh
+  else
+    if [ -n "$COMP" ]; then
+      summit-keep --restart compositor 9>&-             # new compositor (and its animations) right away
+      # the dock only draws properly if compositing is up when it starts: wait for the compositor, then restart it
+      for i in $(seq 1 60); do [ -s "${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)" ] && break; sleep 0.25; done
+      summit-keep --restart dock 9>&-
+    fi
+    touched 'usr/local/bin/summit-gestures' && summit-keep --restart gestures 9>&-             # mouse/trackpad gestures
+    touched 'usr/local/lib/summitos/summit-wm-helper' && summit-keep --restart wm 9>&-          # full-screen green button
+    if touched 'usr/local/bin/summit-shell*' 'usr/local/bin/summit-control-center' 'usr/local/bin/summit-appearance' 'usr/local/bin/summit-transition' 'usr/local/lib/summitos/summit_look.py' 'usr/share/icons/*' 'usr/share/applications/*'; then
+      summit-keep --restart shell 9>&-                  # Spotlight, Launchpad, Control Center
+    fi
+    if [ -z "$COMP" ] && touched 'usr/share/plank/*' 'usr/share/icons/*' 'usr/share/applications/*' 'usr/share/summitos/icons/*'; then
+      summit-keep --restart dock 9>&-                   # dock
+    fi
   fi
   if touched 'usr/local/bin/summit-airplay' 'usr/local/bin/summit-connect-agent' && [ -f "$HOME/.config/autostart/summit-airplay.desktop" ]; then
     summit-connect-agent stop-airplay; launch summit-connect-agent airplay   # new AirPlay receiver (also clears a stuck picture)
@@ -74,20 +84,13 @@ if [ "$1" != "--login" ] && [ -n "$DISPLAY" ]; then
   if touched 'usr/local/bin/summit-connect-agent' && [ -f "$HOME/.config/autostart/summit-screen-sharing.desktop" ]; then
     summit-connect-agent stop-screen; launch summit-connect-agent screen        # Screen Sharing with the new settings
   fi
-  if touched 'usr/local/bin/summit-shell*' 'usr/local/bin/summit-control-center' 'usr/local/bin/summit-appearance' 'usr/local/bin/summit-transition' 'usr/local/lib/summitos/summit_look.py' 'usr/share/icons/*' 'usr/share/applications/*'; then
-    restart bin/summit-shell -f; launch summit-shell      # Spotlight, Launchpad, Control Center
-  fi
-  if touched 'usr/share/plank/*' 'usr/share/icons/*' 'usr/share/applications/*' 'usr/share/summitos/icons/*'; then
-    restart plank -x; launch plank                       # dock
-  fi
   if touched 'etc/xdg/xfce4/panel/*' 'usr/share/xfce4/panel/*' 'usr/lib/x86_64-linux-gnu/xfce4/panel/*' 'usr/lib/x86_64-linux-gnu/gtk-3.0/modules/*'; then
     xfce4-panel -r >/dev/null 2>&1 9>&- &                                                  # menu bar
   fi
-  # self-heal: the dock, Spotlight and notifications should always be running
+  # self-heal: every part of the desktop should be running, each under its keeper
   sleep 2
   pgrep -u "$(id -u)" -f notifyd/xfce4-notifyd >/dev/null || launch /usr/lib/x86_64-linux-gnu/xfce4/notifyd/xfce4-notifyd
-  pgrep -u "$(id -u)" -x plank >/dev/null || launch plank
-  pgrep -u "$(id -u)" -f bin/summit-shell >/dev/null || launch summit-shell
+  summit-keep --ensure 9>&-
 fi
 
 ver=$(jget $D/state.json version); notes=$(jget $D/state.json notes)

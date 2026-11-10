@@ -1,0 +1,13 @@
+# Summit OS: the same job as the stock unit ("logins are allowed from here on"), minus the wait for the
+# network. Stock orders this after network.target, and the login screen waits for this, so the desktop
+# only appeared once Wi-Fi/Ethernet had started. A desktop Mac with local accounts has no need for that.
+[Unit]
+Description=Permit User Sessions
+Documentation=man:systemd-user-sessions.service(8)
+After=remote-fs.target nss-user-lookup.target home.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/systemd/systemd-user-sessions start
+ExecStop=/usr/lib/systemd/systemd-user-sessions stop

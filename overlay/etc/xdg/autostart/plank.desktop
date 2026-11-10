@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
 Name=Dock
-Exec=sh -c "sleep 2; plank"
+Exec=summit-keep dock
 OnlyShowIn=XFCE;
 NoDisplay=true

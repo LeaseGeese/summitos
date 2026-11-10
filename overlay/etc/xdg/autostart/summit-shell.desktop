@@ -2,6 +2,6 @@
 Type=Application
 Name=Summit Shell
 Comment=Spotlight, Launchpad and Control Center
-Exec=summit-shell
+Exec=summit-keep shell
 OnlyShowIn=XFCE;
 NoDisplay=true

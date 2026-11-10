@@ -2,11 +2,13 @@
 Description=Check for Summit OS updates
 
 [Timer]
-# wakes every 2 minutes; summit-update only actually checks when it's due
-# (every 6 hours normally, every 2 minutes in Live testing mode)
+# Wakes shortly after startup and then every half hour; summit-update only actually checks when it's
+# due (every 6 hours normally). The half-hour wake-up is a clock time on purpose: it stays scheduled
+# no matter what happened to earlier runs, so update checks can never silently stop.
+# Live testing mode adds summit-update.timer.d/live.conf: a second wake-up every 2 minutes.
 OnBootSec=90s
-OnUnitActiveSec=2min
-AccuracySec=15s
+OnCalendar=*:07,37
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target

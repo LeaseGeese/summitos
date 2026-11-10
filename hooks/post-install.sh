@@ -4,6 +4,16 @@
 set -u
 systemctl enable --now summit-update.timer >/dev/null 2>&1 || true
 systemctl --global enable summit-update-watch.path >/dev/null 2>&1 || true
+# the update timer: every half hour, plus every 2 minutes in Live testing mode (1.25.0; was always 2 minutes).
+# The timer is not restarted: it picks the change up from the reload, and a restart would fire it at once.
+LIVE_D=/etc/systemd/system/summit-update.timer.d; LIVE_T='[Timer]\nOnUnitActiveSec=2min\nAccuracySec=15s\n'
+if python3 -c 'import json,sys; sys.exit(0 if json.load(open("/etc/summit/update.json")).get("live") else 1)' 2>/dev/null; then
+  if [ "$(cat $LIVE_D/live.conf 2>/dev/null)" != "$(printf "$LIVE_T")" ]; then
+    mkdir -p $LIVE_D; printf "$LIVE_T" > $LIVE_D/live.conf; systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+elif [ -f $LIVE_D/live.conf ]; then
+  rm -f $LIVE_D/live.conf; systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 # performance tuning at every start (CPU and GPU clock floors on older Intel chips)
 systemctl enable summit-tune.service >/dev/null 2>&1 || true
 systemctl start summit-tune.service >/dev/null 2>&1 || true

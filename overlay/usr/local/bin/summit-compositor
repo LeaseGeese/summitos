@@ -4,6 +4,7 @@
 #   2. Ubuntu's picom 10 on the GPU: the same glass, no animations
 #   3. light software mode (no blur) for the rest of this boot
 # A GPU mode only counts as working if it starts, actually draws the screen, and doesn't crash.
+# Started (and started again if it ever stops) by `summit-keep compositor`.
 CFG="$HOME/.config/summit"; CONF="$CFG/picom.conf"; LEGACY="$CFG/picom-legacy.conf"; SOFT="$CFG/picom-soft.conf"
 FLAG="$CFG/no-gpu-blur"; NO12="$CFG/no-picom12"
 LOG="$HOME/.cache/summit-picom.log"; mkdir -p "$HOME/.cache" "$CFG"
@@ -11,6 +12,11 @@ export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-x11}" XDG_CURRENT_DESKTOP="${XDG_CU
 PICOM12=/usr/local/lib/summitos/picom
 STATE="${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-$(id -u)"; rm -f "$STATE"   # tells apps when compositing has settled
 BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+PROVED="${XDG_RUNTIME_DIR:-/tmp}/summit-compositor-ok-$(id -u)"            # this GPU mode already drew properly since startup
+# picom 12 is skipped for the rest of this startup after it fails once, and for good only after it failed on two
+# startups in a row (one bad start, or a dark screen at the wrong moment, must not cost the animations forever)
+no12()   { set -- $(cat "$NO12" 2>/dev/null); [ -n "$1" ] && { [ "$1" = "$BOOT" ] || [ "${2:-0}" -ge 2 ]; }; }
+fail12() { set -- $(cat "$NO12" 2>/dev/null); n=${2:-0}; [ "$1" = "$BOOT" ] || n=$((n + 1)); echo "$BOOT $n" > "$NO12"; }
 [ -f "$CONF" ] && [ -f "$SOFT" ] && [ -f "$LEGACY" ] || SUMMIT_APPEARANCE_LOCAL=1 summit-appearance write-files >/dev/null 2>&1
 [ -f "$SOFT" ] || SOFT=/etc/xdg/picom-summit.conf
 # keep the log small
@@ -20,12 +26,7 @@ note() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 # the dock decides how to draw itself when it starts; after a gap in compositing it must start again
 redock() {
   pgrep -u "$(id -u)" -x plank >/dev/null || return 0
-  pkill -u "$(id -u)" -x plank
-  # a new dock quits at once if the old one is still there, so wait until it has really gone
-  for i in $(seq 1 40); do pgrep -u "$(id -u)" -x plank >/dev/null || break; sleep 0.25; done
-  pkill -9 -u "$(id -u)" -x plank 2>/dev/null
-  systemd-run --user --quiet --collect --scope -- setsid plank >/dev/null 2>&1 </dev/null &
-  sleep 1
+  summit-keep --restart dock; sleep 1
 }
 
 software() {
@@ -46,8 +47,12 @@ gpu() {
   PID=$!
   sleep 4
   if ! kill -0 "$PID" 2>/dev/null; then note "$3 didn't start"; return 1; fi
-  if ! /usr/local/lib/summitos/screen-check >/dev/null 2>&1; then
-    note "$3 started but drew a blank screen"; kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; return 1
+  # the picture is checked once per startup: later the screen may be showing something dark of your own
+  if [ "$(cat "$PROVED" 2>/dev/null)" != "$BOOT $3" ]; then
+    if ! /usr/local/lib/summitos/screen-check >/dev/null 2>&1; then
+      note "$3 started but drew a blank screen"; kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; return 1
+    fi
+    echo "$BOOT $3" > "$PROVED"
   fi
   return 0
 }
@@ -57,21 +62,23 @@ gpu() {
 [ -n "$BOOT" ] && [ "$(cat "$FLAG" 2>/dev/null)" = "$BOOT" ] && software "GPU failed earlier this boot"
 
 MODE=""
-if [ -x "$PICOM12" ] && [ ! -f "$NO12" ] && gpu "$PICOM12" "$CONF" "picom 12"; then MODE=12
+if [ -x "$PICOM12" ] && ! no12 && gpu "$PICOM12" "$CONF" "picom 12"; then MODE=12
 elif gpu picom "$LEGACY" "picom 10"; then
-  MODE=10; [ -x "$PICOM12" ] && [ ! -f "$NO12" ] && echo "$BOOT" > "$NO12"   # picom 12 isn't usable here
+  MODE=10; [ -x "$PICOM12" ] && ! no12 && fail12                              # picom 12 didn't work this time
 else software "GPU compositor didn't work"
 fi
 note "GPU mode (picom $MODE)"
 echo gpu > "$STATE"
 [ -n "$FELL$SUMMIT_REDOCK" ] && redock
-# blur works: if a previous boot fell back, give the glass back (only once it has proved stable)
-if [ -f "$FLAG" ]; then
-  ( sleep 60; kill -0 "$PID" 2>/dev/null && rm -f "$FLAG" && summit-appearance refresh-glass >/dev/null 2>&1 ) &
-fi
+# it works: once it has proved stable for a minute, forget earlier failures (and give the glass back
+# if a previous startup had fallen back to software mode)
+( sleep 60; kill -0 "$PID" 2>/dev/null || exit 0
+  [ "$MODE" = 12 ] && rm -f "$NO12"
+  [ -f "$FLAG" ] && rm -f "$FLAG" && summit-appearance refresh-glass >/dev/null 2>&1 ) &
 wait "$PID"; rc=$?
 case "$rc" in 0|137|143) exit 0 ;; esac     # stopped on purpose (restart, logout)
+timeout 5 xset q >/dev/null 2>&1 || exit 0  # the screen itself went away (logging out): not a crash
 if [ "$MODE" = 12 ]; then
-  note "picom 12 crashed (exit $rc): using picom 10"; echo "$BOOT" > "$NO12"; SUMMIT_REDOCK=1 exec "$0"
+  note "picom 12 crashed (exit $rc): using picom 10"; fail12; SUMMIT_REDOCK=1 exec "$0"
 fi
 software "GPU compositor crashed (exit $rc)"

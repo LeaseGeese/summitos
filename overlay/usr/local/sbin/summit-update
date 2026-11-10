@@ -103,6 +103,24 @@ def notify_sessions():
             run("systemctl", "--user", "-M", f"{parts[1]}@", "daemon-reload")
             run("systemctl", "--user", "-M", f"{parts[1]}@", "start", "--no-block", "summit-update-session.service")
 
+LIVE_TIMER = "[Timer]\nOnUnitActiveSec=2min\nAccuracySec=15s\n"
+def sync_timer(c):
+    """The update timer wakes every half hour; Live testing mode adds a 2-minute wake-up next to it (a drop-in).
+    (The drop-in only adds: an empty "OnUnitActiveSec=" would also erase the timer's first run after startup.)"""
+    d = "/etc/systemd/system/summit-update.timer.d"; f = f"{d}/live.conf"
+    want = LIVE_TIMER if c.get("live") else None
+    try: have = open(f).read()
+    except OSError: have = None
+    if want == have: return
+    try:
+        if want:
+            os.makedirs(d, exist_ok=True)
+            with open(f, "w") as o: o.write(want)
+        else:
+            os.remove(f)
+    except OSError: return
+    run("systemctl", "daemon-reload")       # a running timer picks the change up; restarting it would fire it at once
+
 # ---------------------------------------------------------------- talking to GitHub
 def latest(c):
     """Returns (sha, update.json) for the newest commit on the update branch."""
@@ -388,8 +406,9 @@ def main(argv):
             elif isinstance(DEFAULTS[k], int): v = max(1, int(v))
             c[k] = v
         c.pop("skip_sha", None) if any(kv.startswith("live=") for kv in argv[2:]) else None
-        write_json(CONF, c); print(json.dumps(c, indent=2)); return 0
+        write_json(CONF, c); sync_timer(c); print(json.dumps(c, indent=2)); return 0
     if cmd == "auto":
+        sync_timer(c)
         interval = 2 if c.get("live") else int(c.get("interval_minutes", 360))
         last = read_json(STATUS).get("last_check", 0)
         if time.time() - last < interval * 60 - 20: return 0

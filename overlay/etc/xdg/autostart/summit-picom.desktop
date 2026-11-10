@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
 Name=Summit Compositor
-Exec=sh -c "sleep 1; exec summit-compositor"
+Exec=summit-keep compositor
 OnlyShowIn=XFCE;
 NoDisplay=true

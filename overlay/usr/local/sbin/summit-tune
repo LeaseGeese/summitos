@@ -1,26 +1,36 @@
 #!/bin/sh
-# Summit OS performance tuning, run once at startup. Each change is small, safe, and only applied
-# on hardware it suits; everything resets by itself at the next boot.
+# Summit OS performance tuning. Each change is small, safe, and only applied on hardware it suits;
+# everything resets by itself at the next boot.
+#   summit-tune          everything (run once at startup by summit-tune.service)
+#   summit-tune gpu      only the graphics part (run when the graphics card appears, which can be
+#                        after the startup run: see /etc/udev/rules.d/71-summit-tune.rules)
+WHAT="${1:-all}"
 
 # Disks: USB enclosures often report an SSD as a spinning hard drive, which gets the slower hard-drive
 # settings (and the app preloader). Time a few random reads and correct any SSD found that way.
-/usr/local/lib/summitos/disk-speed-check 2>/dev/null || true
+if [ "$WHAT" = all ]; then
+  /usr/local/lib/summitos/disk-speed-check 2>/dev/null || true
+fi
 
 # CPU: older Intel chips (no hardware P-states, e.g. the 2014 iMac's Haswell) start each burst of work
 # at their lowest clock and step up slowly, which feels like lag. Keep a floor near the base clock;
 # when idle the CPU still sleeps as deeply as before.
 P=/sys/devices/system/cpu/intel_pstate
-if [ -d "$P" ] && [ ! -e /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ]; then
+if [ "$WHAT" = all ] && [ -d "$P" ] && [ ! -e /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ]; then
   cur=$(cat "$P/min_perf_pct" 2>/dev/null || echo 100)
   [ "$cur" -lt 45 ] && echo 45 > "$P/min_perf_pct"
 fi
 
 # Intel graphics: same idea for the GPU, so the first frames of an animation or a window drag
 # aren't drawn at idle clock speed (the GPU still powers down completely when nothing is drawn)
+if [ "$WHAT" = gpu ]; then        # the card was just announced; its controls follow a moment later
+  i=0; while [ $i -lt 30 ] && ! ls /sys/class/drm/card*/gt_min_freq_mhz >/dev/null 2>&1; do sleep 0.1; i=$((i + 1)); done
+fi
 for c in /sys/class/drm/card*; do
   [ -w "$c/gt_min_freq_mhz" ] && [ -r "$c/gt_RP0_freq_mhz" ] || continue
   max=$(cat "$c/gt_RP0_freq_mhz"); low=$(cat "$c/gt_RPn_freq_mhz" 2>/dev/null || echo 0)
   want=$(( (max * 40 / 100 + 25) / 50 * 50 ))
-  [ "$want" -gt "$low" ] && [ "$want" -lt "$max" ] && echo "$want" > "$c/gt_min_freq_mhz"
+  cur=$(cat "$c/gt_min_freq_mhz" 2>/dev/null || echo 0)
+  [ "$want" -gt "$low" ] && [ "$want" -lt "$max" ] && [ "$cur" -lt "$want" ] && echo "$want" > "$c/gt_min_freq_mhz"
 done
 exit 0

@@ -1,0 +1,3 @@
+# Summit OS: Intel graphics can appear after summit-tune's startup run (the driver loads while the
+# system starts). Set its clock floor at the moment the card shows up, so it is never missed.
+ACTION=="add", SUBSYSTEM=="drm", KERNEL=="card[0-9]", DRIVERS=="i915", RUN+="/usr/local/sbin/summit-tune gpu"

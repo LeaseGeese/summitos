@@ -28,6 +28,14 @@ echo "cpu MHz: $(awk -F: '/MHz/{s+=$2;n++} END{if(n) printf "%d", s/n}' /proc/cp
 ps -eo pcpu,rss,comm --sort=-pcpu | head -9 | awk 'NR==1{print "  %CPU  MB  PROCESS"; next}{printf "  %4s %4d  %s\n", $1, $2/1024, $3}'
 free -m | awk '/Mem:/{print "memory used: "$3" MB of "$2" MB"} /Swap:/{print "swap used: "$3" MB"}'
 echo
+echo "--- startup"
+systemd-analyze time 2>/dev/null | head -n 1 | cut -c1-200
+echo "login screen at $(systemctl show lightdm -p ActiveEnterTimestampMonotonic --value 2>/dev/null | awk '{printf "%.1f", $1/1e6}') s, network at $(systemctl show NetworkManager -p ActiveEnterTimestampMonotonic --value 2>/dev/null | awk '{printf "%.1f", $1/1e6}') s, desktop session started $(ps -o etimes= -C xfce4-session 2>/dev/null | head -n 1 | xargs) s ago, up $(cut -d. -f1 /proc/uptime) s"
+systemd-analyze blame 2>/dev/null | head -n 8 | sed 's/^ */  /'
+echo
+echo "--- desktop parts"
+if command -v summit-keep >/dev/null 2>&1; then summit-keep --status 2>&1 | cut -c1-160; else echo "no keeper (before 1.25)"; fi
+echo
 echo "--- disk"
 R=$(findmnt -no SOURCE /); D=$(lsblk -no PKNAME "$R" | head -1)
 echo "startup disk: /dev/$D $(lsblk -dno MODEL,TRAN,SIZE /dev/$D | xargs)  rotational=$(cat /sys/block/$D/queue/rotational)  scheduler=$(grep -o '\[.*\]' /sys/block/$D/queue/scheduler)"

@@ -1,0 +1,141 @@
+#!/bin/sh
+# summit-keep: keeps the parts of the Summit desktop running.
+#
+#   summit-keep PART             run PART, and start it again if it ever stops (how each part starts at login)
+#   summit-keep --restart PART   restart PART now (also puts a part started some other way under a keeper)
+#   summit-keep --ensure [PART]  start PART (or every part) under a keeper unless it already has one
+#   summit-keep --stop PART      stop PART until the next login or the next --restart
+#   summit-keep --reload         replace every keeper with a fresh one (after summit-keep itself is updated)
+#   summit-keep --status         what is running, and how often each part had to be started again
+#
+# Parts:  compositor  glass, shadows and window animations
+#         dock        the Dock
+#         shell       Spotlight, Launchpad, Control Center, appearance changes
+#         gestures    Magic Mouse and trackpad gestures
+#         wm          the green button's full screen
+#
+# A keeper sleeps until its part exits, so it costs nothing while things work. A part that fails five
+# times in a row right after starting is left alone until the next login, so a broken part can never
+# keep the computer busy. What happened is written to ~/.cache/summit-keep.log.
+PARTS="compositor dock shell gestures wm"
+ME=$(id -u)
+RUN="${XDG_RUNTIME_DIR:-/tmp}/summit-keep-$ME"; [ -d "$RUN" ] || mkdir -p "$RUN" 2>/dev/null
+LOG="$HOME/.cache/summit-keep.log"; [ -d "$HOME/.cache" ] || mkdir -p "$HOME/.cache" 2>/dev/null
+export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-x11}" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-XFCE}"   # the dock checks these
+
+# what to run, the process names that belong to the part (one pattern), and what to call it
+part() {
+  case "$1" in
+    compositor) CMD=/usr/local/bin/summit-compositor; NAMES="summit-composit|picom"; LABEL="The glass and window effects" ;;
+    dock)       CMD=plank; NAMES="plank"; LABEL="The Dock" ;;
+    shell)      CMD=/usr/local/bin/summit-shell; NAMES="summit-shell"; LABEL="Spotlight and Launchpad" ;;
+    gestures)   CMD=/usr/local/bin/summit-gestures; NAMES="summit-gestures"; LABEL="Mouse and trackpad gestures" ;;
+    wm)         CMD=/usr/local/lib/summitos/summit-wm-helper; NAMES="summit-wm-helpe"; LABEL="Full screen" ;;
+    *) return 1 ;;
+  esac
+}
+note() {
+  [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 100000 ] && tail -c 30000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+  echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null
+}
+running() { pgrep -u "$ME" -x "$NAMES" >/dev/null; }
+kept() { [ -e "$RUN/$1.lock" ] && ! flock -n "$RUN/$1.lock" true 2>/dev/null; }      # does the part have a keeper?
+stop_part() {     # stop the part's processes and wait until they have really gone
+  running || return 0
+  pkill -u "$ME" -x "$NAMES" 2>/dev/null
+  i=0; while running && [ $i -lt 30 ]; do sleep 0.2; i=$((i + 1)); done
+  running && pkill -9 -u "$ME" -x "$NAMES" 2>/dev/null
+  return 0
+}
+uptime_s() { read up _ < /proc/uptime; echo "${up%.*}"; }
+# still logged in? (the desktop session that started us is alive; without one to watch, ask the screen)
+alive() {
+  if [ -n "$SESSION" ]; then kill -0 "$SESSION" 2>/dev/null; else timeout 5 xset q >/dev/null 2>&1; fi
+}
+
+keep() {
+  P=$1
+  exec 8>"$RUN/$P.lock"; flock -n 8 || exit 0                   # this part already has a keeper
+  rm -f "$RUN/$P.stop" "$RUN/$P.restart"; echo 0 > "$RUN/$P.count"; echo $$ > "$RUN/$P.keeper"
+  # the desktop session we belong to: usually our parent (it starts the login items)
+  SESSION=""; read parent 2>/dev/null < "/proc/$PPID/comm" && [ "$parent" = xfce4-session ] && SESSION=$PPID
+  [ -n "$SESSION" ] || SESSION=$(pgrep -u "$ME" -x xfce4-session | head -n 1)
+  export SUMMIT_SESSION_PID="$SESSION"
+  trap 'stop_part; exit 0' TERM INT HUP
+  fails=0; starts=0
+  while :; do
+    alive || exit 0
+    stop_part                                                    # one of each, never two
+    case "$P" in
+      compositor) [ $starts -eq 0 ] && sleep 0.5 ;;              # let the window manager take the screen first
+      dock)       # the Dock only draws properly once the compositor is up: wait for it (a few seconds at most)
+                  i=0; while ! pgrep -u "$ME" -x picom >/dev/null && [ $i -lt 32 ]; do sleep 0.25; i=$((i + 1)); done
+                  sleep 0.8 ;;
+    esac
+    began=$(uptime_s)
+    $CMD 8>&- &
+    child=$!; starts=$((starts + 1))
+    wait "$child"; rc=$?
+    [ -e "$RUN/$P.stop" ] && exit 0                              # stopped on purpose
+    alive || { stop_part; exit 0; }                         # logged out: nothing to keep
+    if [ -e "$RUN/$P.restart" ]; then rm -f "$RUN/$P.restart"; fails=0; continue; fi
+    ran=$(( $(uptime_s) - began ))
+    echo $(( $(cat "$RUN/$P.count" 2>/dev/null || echo 0) + 1 )) > "$RUN/$P.count"
+    if [ "$ran" -lt 20 ]; then fails=$((fails + 1)); else fails=0; fi
+    if [ "$fails" -ge 5 ]; then
+      note "$P stopped (exit $rc) $fails times in a row right after starting: leaving it off until the next login"
+      notify-send -a "Summit OS" -i dialog-warning "$LABEL stopped working" \
+        "It will be tried again the next time you log in. Software Update may have a fix." 8>&- 2>/dev/null
+      exit 1
+    fi
+    note "$P stopped (exit $rc) after ${ran}s: starting it again"
+    sleep "$fails"
+  done
+}
+
+start_keeper() {   # a keeper of its own for the part, outside whatever asked for it
+  if systemctl --user show-environment >/dev/null 2>&1; then
+    systemd-run --user --quiet --collect --scope -- setsid "$0" "$1" >/dev/null 2>&1 </dev/null 9>&- &
+  else
+    setsid "$0" "$1" >/dev/null 2>&1 </dev/null 9>&- &
+  fi
+}
+
+case "$1" in
+  --restart)
+    part "$2" || { echo "summit-keep: unknown part '$2' (parts: $PARTS)" >&2; exit 64; }
+    rm -f "$RUN/$2.stop"
+    if kept "$2"; then
+      : > "$RUN/$2.restart"; stop_part                           # its keeper starts it again
+    else
+      stop_part; start_keeper "$2"                               # started some other way: hand it to a keeper
+    fi ;;
+  --ensure)
+    for p in ${2:-$PARTS}; do
+      part "$p" || exit 64
+      kept "$p" && continue
+      rm -f "$RUN/$p.stop"; stop_part; start_keeper "$p"
+    done ;;
+  --reload)
+    for p in $PARTS; do
+      part "$p"; pid=$(cat "$RUN/$p.keeper" 2>/dev/null)
+      kept "$p" && [ -n "$pid" ] || continue
+      kill "$pid" 2>/dev/null                                    # the keeper stops its part and leaves
+      i=0; while kept "$p" && [ $i -lt 40 ]; do sleep 0.2; i=$((i + 1)); done
+    done
+    "$0" --ensure ;;
+  --stop)
+    part "$2" || exit 64
+    : > "$RUN/$2.stop"; stop_part ;;
+  --status)
+    for p in $PARTS; do
+      part "$p"
+      if running; then s=running; else s="NOT running"; fi
+      kept "$p" && k="kept" || k="no keeper"
+      echo "$p: $s, $k, started again $(cat "$RUN/$p.count" 2>/dev/null || echo 0)x this login"
+    done
+    [ -s "$LOG" ] && tail -n 5 "$LOG" ;;
+  ""|-h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) part "$1" || { echo "summit-keep: unknown part '$1' (parts: $PARTS)" >&2; exit 64; }
+     keep "$1" ;;
+esac

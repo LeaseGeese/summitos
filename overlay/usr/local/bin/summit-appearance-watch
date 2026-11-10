@@ -1,8 +1,10 @@
 #!/bin/sh
 # Applies the Auto (day/night) appearance when the time comes.
-# Only wakes the (Python) appearance tool when Auto mode is actually on.
+# Only wakes the (Python) appearance tool when Auto mode is actually on, and leaves when you log out.
 summit-appearance session-start
 CFG="$HOME/.config/summit/appearance.json"
+SESSION=$(pgrep -u "$(id -u)" -x xfce4-session | head -n 1)
 while sleep 300; do
+  [ -z "$SESSION" ] || kill -0 "$SESSION" 2>/dev/null || exit 0
   grep -q '"mode": "auto"' "$CFG" 2>/dev/null && summit-appearance auto-check
 done

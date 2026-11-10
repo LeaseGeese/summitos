@@ -24,6 +24,8 @@ NAV_APPS = ("epiphany", "firefox", "chrom", "brave", "edge", "vivaldi", "opera",
 SKIP_CLASSES = ("xfdesktop", "plank", "xfce4-panel", "summit-shell", "summit-transition", "summit-control-center")
 OFF = os.path.join(os.path.expanduser("~"), ".config", "summit", "no-gestures")
 DEBUG = bool(os.environ.get("SUMMIT_GESTURES_DEBUG"))
+try: SESSION = int(os.environ.get("SUMMIT_SESSION_PID") or 0)     # the desktop session we belong to (set by summit-keep)
+except ValueError: SESSION = 0
 
 def eviocgabs(code):
     return (2 << 30) | (24 << 16) | (ord("E") << 8) | (0x40 + code)
@@ -187,7 +189,8 @@ def main():
     surfaces = {}; next_scan = 0
     while True:
         if time.monotonic() >= next_scan:
-            found = find_devices()
+            if SESSION and not os.path.exists(f"/proc/{SESSION}"): return     # logged out: this reads devices, not
+            found = find_devices()                                            # the screen, so it must leave by itself
             for p in list(surfaces):
                 if p not in found: surfaces.pop(p).close()
             for p, (kind, name) in found.items():

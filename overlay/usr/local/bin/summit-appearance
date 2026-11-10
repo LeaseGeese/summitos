@@ -489,7 +489,7 @@ def compositor(action):
     """The compositor reloads its config file by itself whenever it changes (one quick reset),
     so it only needs starting if it isn't running."""
     if run("pgrep", "-u", str(os.getuid()), "-x", "picom").returncode == 0: return
-    subprocess.Popen(["/usr/local/bin/summit-compositor"], start_new_session=True,
+    subprocess.Popen(["/usr/local/bin/summit-keep", "--ensure", "compositor"], start_new_session=True,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def apply(s, restart_compositor=True, changed=None):
