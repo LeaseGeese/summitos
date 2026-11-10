@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Summit Full Screen
+Comment=The green button makes windows full screen, like macOS
+Exec=/usr/local/lib/summitos/summit-wm-helper
+NoDisplay=true
+X-XFCE-Autostart-Override=true

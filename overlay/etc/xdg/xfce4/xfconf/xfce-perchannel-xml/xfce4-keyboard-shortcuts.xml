@@ -64,6 +64,7 @@
       <property name="&lt;Alt&gt;F8" type="string" value="resize_window_key"/>
       <property name="&lt;Alt&gt;F10" type="string" value="maximize_window_key"/>
       <property name="&lt;Alt&gt;F11" type="string" value="fullscreen_key"/>
+      <property name="&lt;Primary&gt;&lt;Super&gt;f" type="string" value="fullscreen_key"/>
       <property name="&lt;Alt&gt;F12" type="string" value="above_key"/>
       <property name="&lt;Primary&gt;&lt;Shift&gt;&lt;Alt&gt;Left" type="string" value="move_window_left_key"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;End" type="string" value="move_window_next_workspace_key"/>

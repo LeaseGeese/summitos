@@ -359,6 +359,65 @@ class Launchpad(Gtk.Window):
         return False
 
 # ------------------------------------------------------------------ the shell
+# ------------------------------------------------------------------ full-screen title bar
+class FullscreenBar(Gtk.Window):
+    """In full screen, pushing the pointer against the top edge slides this in: the window's title and its
+    traffic lights (close, minimize, leave full screen). summit-wm-helper decides when to show it."""
+    CSS = b"""
+    .summit-glass.summit-fsbar { border-radius: 0 0 12px 12px; border-top-width: 0; }
+    button.summit-light { min-width: 13px; min-height: 13px; padding: 0; border-radius: 999px; border: 1px solid rgba(0,0,0,0.18);
+                          background-image: none; box-shadow: inset 0 1px rgba(255,255,255,0.35); }
+    button.summit-light.close { background-color: #FF5F57; }
+    button.summit-light.min   { background-color: #FEBC2E; }
+    button.summit-light.full  { background-color: #28C840; }
+    button.summit-light:hover { opacity: 0.85; }
+    .summit-fsbar-title { font-weight: 600; }
+    """
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.POPUP, title="Full Screen Bar")
+        glassify(self, "summit-shell")
+        self.set_type_hint(Gdk.WindowTypeHint.DROPDOWN_MENU)
+        p = Gtk.CssProvider(); p.load_from_data(self.CSS)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_USER + 2)
+        bar = Gtk.Box(spacing=8); bar.get_style_context().add_class("summit-glass"); bar.get_style_context().add_class("summit-fsbar")
+        bar.set_size_request(-1, 34)
+        lights = Gtk.Box(spacing=8, margin_start=14, valign=Gtk.Align.CENTER)
+        for cls, tip, fn in (("close", "Close", self.close_win), ("min", "Minimize", self.minimize), ("full", "Exit Full Screen", self.leave)):
+            b = Gtk.Button(); b.get_style_context().add_class("summit-light"); b.get_style_context().add_class(cls)
+            b.set_tooltip_text(tip); b.connect("clicked", lambda *_, f=fn: (f(), self.hide())); lights.pack_start(b, False, False, 0)
+        bar.pack_start(lights, False, False, 0)
+        self.title = Gtk.Label(); self.title.get_style_context().add_class("summit-fsbar-title")
+        self.title.set_ellipsize(Pango.EllipsizeMode.END)
+        bar.set_center_widget(self.title)
+        self.add(bar); self.xid = None; self.watch = None
+
+    def run(self, *cmd):
+        try: subprocess.Popen(list(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError: pass
+    def close_win(self): self.run("wmctrl", "-i", "-c", self.xid)
+    def minimize(self): self.run("xdotool", "windowminimize", self.xid)
+    def leave(self): self.run("wmctrl", "-i", "-r", self.xid, "-b", "remove,fullscreen")
+
+    def reveal(self, xid):
+        self.xid = xid
+        try: name = subprocess.run(["xdotool", "getwindowname", str(int(xid, 16))], capture_output=True, text=True, timeout=2).stdout.strip()
+        except Exception: name = ""
+        self.title.set_text(name)
+        disp = Gdk.Display.get_default(); seat = disp.get_default_seat()
+        _, px, py = seat.get_pointer().get_position()
+        mon = disp.get_monitor_at_point(px, py); g = mon.get_geometry()
+        self.move(g.x, g.y); self.set_size_request(g.width, 34); self.resize(g.width, 34)
+        self.show_all(); self.present()
+        if self.watch is None: self.watch = GLib.timeout_add(100, self.check)
+    def check(self):
+        """Slide away once the pointer leaves the bar."""
+        disp = Gdk.Display.get_default()
+        _, px, py = disp.get_default_seat().get_pointer().get_position()
+        x, y = self.get_position(); w, h = self.get_size()
+        if not (x <= px < x + w and py < y + h + 12):
+            self.hide(); self.watch = None; return False
+        return True
+
 class Shell(Gtk.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
@@ -366,6 +425,9 @@ class Shell(Gtk.Application):
         for name in ("spotlight", "launchpad", "control-center", "reload"):
             act = Gio.SimpleAction.new(name, None); act.connect("activate", self.on_action, name); self.add_action(act)
         # appearance changes ("mode=dark accent=green"), applied here so nothing has to start up
+        act = Gio.SimpleAction.new("fullscreen-bar", GLib.VariantType.new("s"))
+        act.connect("activate", lambda _a, p: self.fsbar_show(p.get_string())); self.add_action(act)
+        self.fsbar = None
         act = Gio.SimpleAction.new("appearance", GLib.VariantType.new("s"))
         act.connect("activate", lambda _a, p: self.change_appearance(p.get_string().split())); self.add_action(act)
         self.look = None; self.look_busy = False; self.look_pending = []
@@ -404,6 +466,10 @@ class Shell(Gtk.Application):
     def reload_apps(self):
         self.app_list = apps()
         if self._pad is not None: self._pad.populate()
+
+    def fsbar_show(self, xid):
+        if self.fsbar is None: self.fsbar = FullscreenBar(); self.fsbar.set_application(self)
+        self.fsbar.reveal(xid)
 
     # ---- appearance: crossfade, apply in a worker thread, fade once the screen has repainted
     def _load(self, name, path):

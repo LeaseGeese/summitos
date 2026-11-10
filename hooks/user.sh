@@ -28,4 +28,9 @@ if [ -d "$L" ] && [ ! -e "$HOME/.config/summit/appstore-docked" ]; then
     *) dconf write /net/launchpad/plank/docks/dock1/dock-items "$(echo "$items" | sed "s/\]$/, 'appstore.dockitem']/")" ;;
   esac
 fi
+# 1.23.3: Control+Command+F toggles full screen, like macOS
+# (only into a personal shortcut list that already exists: a list with just this one would hide the others)
+if xfconf-query -c xfce4-keyboard-shortcuts -l 2>/dev/null | grep -q "^/xfwm4/custom/<Super>q$"; then
+  xfconf-query -c xfce4-keyboard-shortcuts -p "/xfwm4/custom/<Primary><Super>f" -n -t string -s fullscreen_key 2>/dev/null
+fi
 exit 0

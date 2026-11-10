@@ -1,11 +1,11 @@
 {
-  "version": "1.23.2",
-  "build": 12302,
+  "version": "1.23.3",
+  "build": 12303,
   "restart": "session",
   "notes": [
-    "AirPlay is much smoother: the iMac's graphics chip decodes the stream, frames show the moment they arrive, and your Mac can send 60 frames per second",
-    "Fixed: stopping AirPlay on your Mac no longer leaves a frozen picture on the iMac; the receiver also restarts by itself if it ever stops",
-    "Screen Sharing updates faster and moves windows smoothly"
+    "The green button now makes windows full screen like macOS, covering the menu bar and dock; push the pointer to the top edge for the title bar and traffic lights, or press Control+Command+F",
+    "Minimising now shrinks windows down into the dock, and they grow back out when you reopen them",
+    "Full-screen windows no longer flash when they open, close or show the title bar"
   ],
   "apt": {
     "install": [

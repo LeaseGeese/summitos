@@ -13,7 +13,7 @@ Keys: accent (blue purple pink orange yellow green silver), mode (light dark aut
       dock_size (32-80), dock_zoom (true/false), dock_autohide (true/false),
       text (small default large larger)
 """
-import json, os, subprocess, sys, datetime, shutil
+import json, os, subprocess, sys, datetime, shutil, socket
 
 HOME = os.path.expanduser("~")
 CFG_DIR = os.path.join(HOME, ".config", "summit")
@@ -388,8 +388,23 @@ rules = (
      animations = (
        {{ triggers = [ "open" ];  preset = "appear";    scale = 0.94; duration = 0.17; }},
        {{ triggers = [ "close" ]; preset = "disappear"; scale = 0.95; duration = 0.13; }},
-       {{ triggers = [ "hide" ];  preset = "fly-out";   direction = "down"; duration = 0.24; }},
-       {{ triggers = [ "show" ];  preset = "fly-in";    direction = "up";   duration = 0.22; }}
+       # minimize: shrink down into the dock (bottom centre of the screen) while fading, and back out again
+       {{ triggers = [ "hide" ];
+          p = {{ curve = "cubic-bezier(0.45, 0.0, 0.55, 1.0)"; duration = 0.30; start = 0; end = 1; }};
+          scale-x = "1 - 0.88 * p"; scale-y = "1 - 0.92 * p";
+          offset-x = "p * (window-monitor-x + window-monitor-width / 2 - window-x - window-width * 0.06)";
+          offset-y = "p * (window-monitor-y + window-monitor-height - 36 - window-y - window-height * 0.04)";
+          opacity = {{ curve = "cubic-bezier(0.6, 0.0, 1.0, 1.0)"; duration = 0.30; start = "window-raw-opacity-before"; end = 0; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity";
+          shadow-scale-x = "scale-x"; shadow-scale-y = "scale-y"; shadow-offset-x = "offset-x"; shadow-offset-y = "offset-y"; }},
+       {{ triggers = [ "show" ];
+          p = {{ curve = "cubic-bezier(0.2, 0.8, 0.3, 1.0)"; duration = 0.28; start = 1; end = 0; }};
+          scale-x = "1 - 0.88 * p"; scale-y = "1 - 0.92 * p";
+          offset-x = "p * (window-monitor-x + window-monitor-width / 2 - window-x - window-width * 0.06)";
+          offset-y = "p * (window-monitor-y + window-monitor-height - 36 - window-y - window-height * 0.04)";
+          opacity = {{ curve = "cubic-bezier(0.0, 0.0, 0.4, 1.0)"; duration = 0.28; start = 0; end = "window-raw-opacity"; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity";
+          shadow-scale-x = "scale-x"; shadow-scale-y = "scale-y"; shadow-offset-x = "offset-x"; shadow-offset-y = "offset-y"; }}
      ); }},
   {{ match = "({menus} || window_type = 'notification') && class_g != 'Summit-transition'";
      animations = (
@@ -401,6 +416,9 @@ rules = (
        {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 1.05; duration = 0.20; }},
        {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 1.05; duration = 0.14; }}
      ); }},
+  # full-screen windows stay composited (switching the bypass on and off flashes on Intel graphics);
+  # only video players, games and the AirPlay picture skip the compositor for the lowest latency
+  {{ match = "!(name = '{socket.gethostname()}' || class_g = 'mpv' || class_g = 'vlc' || class_g *= 'steam_app' || class_g = 'Totem')"; unredir = false; }},
   # the appearance crossfade animates itself and must never trigger full-screen bypass
   {{ match = "class_g = 'Summit-transition'"; shadow = false; corner-radius = 0; unredir = false; }}
 );
