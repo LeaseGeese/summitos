@@ -348,8 +348,14 @@ class Launchpad(Gtk.Window):
         sel = self.flow.get_selected_children()
         if sel: self.on_child(self.flow, sel[0])
     def on_bg_click(self, w, e):
-        # clicking the empty background closes Launchpad, like on a Mac
-        if e.button == 1: self.hide()
+        # clicking the empty background closes Launchpad, like on a Mac (a click on an app or the search box is theirs)
+        if e.button != 1: return False
+        px, py = self.get_pointer()
+        t = self.entry.translate_coordinates(self, 0, 0); a = self.entry.get_allocation()
+        if t and t[0] <= px < t[0] + a.width and t[1] <= py < t[1] + a.height: return False
+        t = self.translate_coordinates(self.flow, px, py)
+        if t and self.flow.get_child_at_pos(t[0], t[1]) is not None: return False
+        self.hide()
         return False
     def on_key(self, w, e):
         if e.keyval == Gdk.KEY_Escape: self.hide(); return True
@@ -447,6 +453,16 @@ class Shell(Gtk.Application):
         self.appmon = Gio.AppInfoMonitor.get(); self.appmon.connect("changed", lambda *_: self.reload_apps())
         self.spot = Spotlight(self); self.spot.set_application(self)
         self._pad = None          # Launchpad is built the first time it's opened
+        self.dock_handle = None; GLib.timeout_add_seconds(4, self.start_dock_handle)     # drag the Dock's ends to resize it
+
+    def start_dock_handle(self):
+        try:
+            import summit_dockhandle
+            self.dock_handle = summit_dockhandle.start(self)
+            if self.dock_handle is not None and self.look is not None: self.look.DOCK_FIT = self.dock_handle.fit
+        except Exception as e:
+            print("dock handle:", e, file=sys.stderr)
+        return False
 
     def load_css(self):
         scr = Gdk.Screen.get_default()
@@ -485,6 +501,7 @@ class Shell(Gtk.Application):
             if self.look is None:
                 self.look = self._load("summit_appearance", "/usr/local/bin/summit-appearance")
                 self.fade = self._load("summit_transition", "/usr/local/bin/summit-transition")
+                if self.dock_handle is not None: self.look.DOCK_FIT = self.dock_handle.fit
         except Exception as e:
             print("appearance:", e, file=sys.stderr)
             subprocess.Popen(["summit-appearance", "set"] + pairs, start_new_session=True,

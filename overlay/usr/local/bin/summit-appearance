@@ -13,7 +13,7 @@ Keys: accent (blue purple pink orange yellow green silver), mode (light dark aut
       dock_size (32-80), dock_zoom (true/false), dock_autohide (true/false),
       text (small default large larger)
 """
-import json, os, subprocess, sys, datetime, shutil, socket
+import json, os, re, subprocess, sys, datetime, shutil, socket
 
 HOME = os.path.expanduser("~")
 CFG_DIR = os.path.join(HOME, ".config", "summit")
@@ -149,6 +149,7 @@ def xf_array(channel, prop, typ, values):
     _XF.setdefault(channel, {})[prop] = [_conv(typ, v) for v in values]
 
 PLANK_PATH = "/net/launchpad/plank/docks/dock1/"
+DOCK_FIT = None      # set by summit-shell: the largest Dock icon size that fits the screen right now
 _DOCK = None
 def dock(key, vtype, value):
     """Change a dock setting in-process (GSettings), instead of starting the dconf tool."""
@@ -173,6 +174,27 @@ def desktop_scheme(dark):
             st.set_string("color-scheme", val); Gio.Settings.sync()
     except Exception:
         pass
+
+def dock_fit(size):
+    """The largest Dock icon size up to `size` that surely fits the screen (counting generously: every
+    pinned icon, every open window, and some spare room). summit-shell has an exact version."""
+    try:
+        from gi.repository import Gio
+        st = Gio.Settings.new_with_path("net.launchpad.plank.dock.settings", PLANK_PATH)
+        n = len(st.get_strv("dock-items")) + 2
+        wins = subprocess.run(["wmctrl", "-lx"], capture_output=True, text=True, timeout=5).stdout.splitlines()
+        n += len({l.split()[2] for l in wins if len(l.split()) > 2 and l.split()[1] != "-1"})
+        item, horiz = 1.0, 0.8
+        for line in open(f"/usr/share/plank/themes/{st.get_string('theme')}/dock.theme"):
+            k, _, v = line.partition("=")
+            if k.strip() == "ItemPadding": item = float(v) / 10
+            elif k.strip() == "HorizPadding": horiz = float(v) / 10
+        out = subprocess.run(["xrandr", "--current"], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r" connected primary (\d+)x", out) or re.search(r" connected (\d+)x", out)
+        width = int(m.group(1)) if m else 1280
+        return max(32, min(size, int((width - 8) / ((1 + item) * n + 2 * horiz + 0.1)) // 2 * 2))
+    except Exception:
+        return size
 
 def dock_sync():
     if _DOCK is not None:
@@ -594,7 +616,11 @@ def apply(s, restart_compositor=True, changed=None):
           xf("xfce4-desktop", p.replace("last-image", "image-style"), "int", 5)
     # dock (each write redraws the dock, so only touch what changed)
     if want("mode"): dock("theme", "s", "Summit-Dark" if dark else "Summit-Light")
-    if want("dock_size"): dock("icon-size", "i", max(32, min(80, int(s["dock_size"]))))
+    if want("dock_size"):
+        size = max(32, min(80, int(s["dock_size"])))
+        try: size = int((DOCK_FIT or dock_fit)(size))    # never bigger than fits the screen: an overfull Dock locks up
+        except Exception: pass
+        dock("icon-size", "i", size)
     if want("dock_zoom"):
         dock("zoom-enabled", "b", bool(s["dock_zoom"])); dock("zoom-percent", "i", 150)
     if want("dock_autohide"): dock("hide-mode", "s", "intellihide" if s["dock_autohide"] else "none")

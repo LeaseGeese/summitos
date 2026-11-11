@@ -1,13 +1,12 @@
 {
-  "version": "1.27.0",
-  "build": 12700,
+  "version": "1.28.0",
+  "build": 12800,
   "restart": "session",
   "notes": [
-    "App Store redesign: a colourful Discover page with a rotating banner, category tiles, Popular, Recently updated and a Games and classic consoles row; each category has its own colour",
-    "Richer app pages: a screenshot gallery, version, last update, download size, licence, What's New, links, and More like this, tinted in the app's own colour",
-    "Sort by Popular, Name or Recently Updated, and filter to verified or open-source apps",
-    "More places to get apps: search also finds apps in Ubuntu's software library (asks for your password), and the App Store installs .deb, .flatpak and .AppImage files, by double-click or Options → Install from a File",
-    "Options menu: update apps automatically once a day, Free Up Space, and Installed now shows how much room each app takes"
+    "Launchpad: clicking an app opens it again (a click was being taken as a click on the background, which only closed Launchpad)",
+    "App Store: the Open button now starts apps the same way Launchpad and the Dock do, shows Opening…, and tells you why if an app could not start; clicking a button on an app's card no longer also opens the app's page",
+    "Resize the Dock like on a Mac: drag either end of the Dock up or down. Right-click an end for Magnification, Hiding, Small / Medium / Large and Dock Settings",
+    "The Dock always fits the screen: with many apps open its icons shrink a little and return to your size afterwards, and a Dock that locks up is restarted automatically"
   ],
   "apt": {
     "install": [
@@ -15,7 +14,8 @@
       "xdg-desktop-portal",
       "xdg-desktop-portal-gtk",
       "xinput",
-      "libfuse2t64"
+      "libfuse2t64",
+      "python3-xlib"
     ],
     "remove": []
   }

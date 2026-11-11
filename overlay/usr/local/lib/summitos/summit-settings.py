@@ -190,6 +190,9 @@ class AppearancePage(Gtk.Box):
             self.size.set_size_request(260, -1)
             dock.pack_start(row("Magnify icons on hover", self.zoom), False, False, 0)
             dock.pack_start(row("Hide the dock when a window covers it", self.hide), False, False, 0)
+            tip = label("You can also drag either end of the Dock up or down to resize it, or right-click there for "
+                        "quick options. With many apps open the icons shrink a little so the Dock always fits the screen.", "summit-subtle")
+            tip.set_line_wrap(True); tip.set_xalign(0); dock.pack_start(tip, False, False, 0)
             self.pack_start(card(section("Dock"), dock), False, False, 0)
         self.refresh()
 
