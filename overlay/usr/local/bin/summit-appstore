@@ -1,12 +1,18 @@
 #!/usr/bin/python3
-"""Summit App Store: find and install apps from Flathub.
+"""Summit App Store: find, install and look after apps.
 
-Apps install for you only (no password needed) with Flatpak, each in its own sandbox, and show up in
-Launchpad, Spotlight and the dock right away. The store only runs while its window is open.
+Where apps come from:
+  Flathub          thousands of apps; they install for you only (no password) with Flatpak, each in its own
+                   sandbox, and show up in Launchpad, Spotlight and the dock right away
+  Ubuntu           the system's own software library (apt); search finds these too. Asks for your password.
+  A file           a .deb, .flatpak/.flatpakref or .AppImage you downloaded: double-click it, or use
+                   Options → Install from a File
 
-  summit-appstore [--show APP_ID] [--updates]
+The store only runs while its window is open (automatic app updates are a small separate timer).
+
+  summit-appstore [--show APP_ID] [--updates] [FILE]
 """
-import os, sys, json, gzip, re, threading, subprocess, time, urllib.request, hashlib, warnings
+import os, sys, json, gzip, re, threading, subprocess, time, urllib.request, hashlib, warnings, shutil
 import xml.etree.ElementTree as ET
 os.environ.setdefault("NO_AT_BRIDGE", "1"); warnings.filterwarnings("ignore")
 import gi
@@ -19,6 +25,9 @@ REMOTE = "flathub"
 REPO_URL = "https://dl.flathub.org/repo/flathub.flatpakrepo"
 AS_DIR = os.path.join(HOME, ".local/share/flatpak/appstream", REMOTE, "x86_64", "active")
 CACHE = os.path.join(HOME, ".cache", "summit-appstore"); os.makedirs(CACHE, exist_ok=True)
+STATE = os.path.join(HOME, ".config", "summit", "appstore.json")     # what the store installed outside Flathub, options
+HELPER = "/usr/local/lib/summitos/appstore-helper"                   # the few steps that need a password (pkexec)
+APPIMAGES = os.path.join(HOME, "Applications")
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 
 FEATURED = ["com.google.Chrome", "org.mozilla.firefox", "com.spotify.Client", "com.discordapp.Discord",
@@ -27,28 +36,81 @@ FEATURED = ["com.google.Chrome", "org.mozilla.firefox", "com.spotify.Client", "c
             "md.obsidian.Obsidian", "org.mozilla.Thunderbird", "org.telegram.desktop", "org.signal.Signal",
             "com.brave.Browser", "com.microsoft.Edge", "org.kde.krita", "org.audacityteam.Audacity",
             "org.inkscape.Inkscape", "fr.handbrake.ghb", "org.keepassxc.KeePassXC", "com.calibre_ebook.calibre"]
-POPULAR = set(FEATURED) | {"com.usebottles.bottles", "org.kde.kdenlive", "org.blender.Blender", "net.lutris.Lutris",
-            "com.github.tchx84.Flatseal", "io.missioncenter.MissionCenter", "org.qbittorrent.qBittorrent",
-            "com.github.johnfactotum.Foliate", "org.darktable.Darktable", "org.shotcut.Shotcut", "com.github.IsmaelMartinez.teams_for_linux"}
+POPULAR = set(FEATURED) | {
+    "com.usebottles.bottles", "org.kde.kdenlive", "org.blender.Blender", "net.lutris.Lutris", "com.github.tchx84.Flatseal",
+    "io.missioncenter.MissionCenter", "org.qbittorrent.qBittorrent", "com.github.johnfactotum.Foliate", "org.darktable.Darktable",
+    "org.shotcut.Shotcut", "com.github.IsmaelMartinez.teams_for_linux", "org.onlyoffice.desktopeditors", "org.kde.okular",
+    "io.github.shiftey.Desktop", "org.godotengine.Godot", "org.libretro.RetroArch", "com.heroicgameslauncher.hgl",
+    "org.prismlauncher.PrismLauncher", "net.pcsx2.PCSX2", "org.DolphinEmu.dolphin-emu", "org.ppsspp.PPSSPP", "io.mpv.Mpv",
+    "com.github.xournalpp.xournalpp", "org.gnome.Boxes", "com.transmissionbt.Transmission", "org.remmina.Remmina",
+    "com.bitwarden.desktop", "org.localsend.localsend_app", "com.stremio.Stremio", "tv.plex.PlexDesktop", "io.freetubeapp.FreeTube",
+    "com.dropbox.Client", "org.zotero.Zotero", "net.ankiweb.Anki", "org.geogebra.GeoGebra", "org.stellarium.Stellarium",
+    "edu.mit.Scratch", "org.musescore.MuseScore", "org.ardour.Ardour", "com.rawtherapee.RawTherapee", "org.kde.digikam",
+    "com.github.PintaProject.Pinta", "org.freecad.FreeCAD", "com.jgraph.drawio.desktop", "org.gnome.Evolution", "com.nextcloud.desktopclient.nextcloud"}
 WINDOWS = ["com.usebottles.bottles", "net.lutris.Lutris", "com.heroicgameslauncher.hgl", "com.valvesoftware.Steam"]
-SECTIONS = [  # (key, title, icon, freedesktop categories)
-    ("discover", "Discover", "starred-symbolic", None),
-    ("productivity", "Productivity", "x-office-document-symbolic", {"Office", "ProjectManagement", "Calendar", "WordProcessor", "Spreadsheet", "Presentation", "ContactManagement"}),
-    ("internet", "Internet & Chat", "network-workgroup-symbolic", {"Network", "WebBrowser", "Chat", "InstantMessaging", "Email", "VideoConference", "FileTransfer", "P2P"}),
-    ("media", "Music & Video", "folder-music-symbolic", {"AudioVideo", "Audio", "Video", "Music", "Player", "Recorder"}),
-    ("graphics", "Graphics & Photo", "image-x-generic-symbolic", {"Graphics", "Photography", "2DGraphics", "3DGraphics", "RasterGraphics", "VectorGraphics"}),
-    ("games", "Games", "input-gaming-symbolic", {"Game"}),
-    ("dev", "Developer Tools", "utilities-terminal-symbolic", {"Development", "IDE"}),
-    ("education", "Education & Science", "accessories-dictionary-symbolic", {"Education", "Science"}),
-    ("utilities", "Utilities", "applications-utilities-symbolic", {"Utility", "System", "FileTools", "Settings"}),
-    ("windows", "Windows Apps", "computer-symbolic", None),
-    (None, None, None, None),
-    ("installed", "Installed", "emblem-ok-symbolic", None),
-    ("updates", "Updates", "software-update-available-symbolic", None),
+SECTIONS = [  # (key, title, icon, freedesktop categories, gradient)
+    ("discover", "Discover", "starred-symbolic", None, ("#5b6cff", "#b15bff")),
+    ("productivity", "Productivity", "x-office-document-symbolic", {"Office", "ProjectManagement", "Calendar", "WordProcessor", "Spreadsheet", "Presentation", "ContactManagement"}, ("#ff9f0a", "#ff6a00")),
+    ("internet", "Internet & Chat", "network-workgroup-symbolic", {"Network", "WebBrowser", "Chat", "InstantMessaging", "Email", "VideoConference", "FileTransfer", "P2P"}, ("#0a84ff", "#36c5f0")),
+    ("media", "Music & Video", "folder-music-symbolic", {"AudioVideo", "Audio", "Video", "Music", "Player", "Recorder"}, ("#ff375f", "#ff7a59")),
+    ("graphics", "Graphics & Photo", "image-x-generic-symbolic", {"Graphics", "Photography", "2DGraphics", "3DGraphics", "RasterGraphics", "VectorGraphics"}, ("#bf5af2", "#ff5fa2")),
+    ("games", "Games", "input-gaming-symbolic", {"Game"}, ("#30c85a", "#12a5a0")),
+    ("dev", "Developer Tools", "utilities-terminal-symbolic", {"Development", "IDE"}, ("#5e5ce6", "#3d8bff")),
+    ("education", "Education & Science", "accessories-dictionary-symbolic", {"Education", "Science"}, ("#19b5c9", "#2fd39a")),
+    ("utilities", "Utilities", "applications-utilities-symbolic", {"Utility", "System", "FileTools", "Settings"}, ("#7a8594", "#4f5b6b")),
+    ("windows", "Windows Apps", "computer-symbolic", None, ("#1f8fff", "#2fd39a")),
+    (None, None, None, None, None),
+    ("installed", "Installed", "emblem-ok-symbolic", None, ("#34c759", "#1f9e4a")),
+    ("updates", "Updates", "software-update-available-symbolic", None, ("#ff9f0a", "#ff5f57")),
 ]
+COLORS = {k: c for k, _, _, _, c in SECTIONS if k}
+TITLES = {k: t for k, t, _, _, _ in SECTIONS if k}
+STORIES = [  # the rotating banner on Discover: (title, text, gradient, apps shown, where the button goes)
+    ("Thousands of apps, one click away", "Apps from Flathub install just for you and run in their own sandbox. Remove any of them at any time.",
+     ("#5b6cff", "#8f5bff", "#d65bc7"), ["com.google.Chrome", "com.spotify.Client", "org.videolan.VLC", "com.discordapp.Discord"], None),
+    ("Get things done", "Documents, notes, mail and meetings: everything a workday needs.",
+     ("#ff9f0a", "#ff6a00", "#ff3d6e"), ["org.libreoffice.LibreOffice", "md.obsidian.Obsidian", "org.mozilla.Thunderbird", "us.zoom.Zoom"], "productivity"),
+    ("Make something", "Paint, edit photos and video, draw, model in 3D. Studio-grade tools, free to use.",
+     ("#bf5af2", "#ff5fa2", "#ff9f6b"), ["org.gimp.GIMP", "org.kde.krita", "org.blender.Blender", "org.kde.kdenlive"], "graphics"),
+    ("Play your way", "Steam, your other game libraries and classic consoles, all on this Mac.",
+     ("#12a5a0", "#30c85a", "#b6e04a"), ["com.valvesoftware.Steam", "com.heroicgameslauncher.hgl", "org.libretro.RetroArch", "net.lutris.Lutris"], "games"),
+    ("Run Windows apps", "Bottles runs many Windows programs (.exe) on Summit. Double-click an installer and pick Bottles.",
+     ("#1f8fff", "#19b2c9", "#2fd39a"), ["com.usebottles.bottles"], "windows"),
+]
+SORTS = [("popular", "Popular"), ("name", "Name"), ("updated", "Recently Updated")]
 PAGE = 60          # cards per page: enough to browse, few enough to stay quick on older Macs
+FILE_KINDS = {".deb": "deb", ".flatpakref": "flatpak", ".flatpak": "flatpak", ".appimage": "appimage"}
 
-# ------------------------------------------------------------------ backend (flatpak)
+# ------------------------------------------------------------------ small things kept between runs
+def load_state():
+    try:
+        with open(STATE) as f: d = json.load(f)
+    except (OSError, ValueError): d = {}
+    d.setdefault("apt", {}); d.setdefault("appimages", {}); d.setdefault("search_ubuntu", True)
+    return d
+
+def save_state(d):
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE + ".tmp", "w") as f: json.dump(d, f, indent=1)
+        os.replace(STATE + ".tmp", STATE)
+    except OSError: pass
+
+def human(n):
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1000 or unit == "GB": return f"{n:.0f} {unit}" if unit in ("bytes", "KB") or n >= 100 else f"{n:.1f} {unit}"
+        n /= 1000
+
+def ago(ts):
+    if not ts: return ""
+    d = max(0, time.time() - ts) / 86400
+    if d < 1: return "today"
+    if d < 2: return "yesterday"
+    if d < 31: return f"{int(d)} days ago"
+    if d < 365: return f"{int(d / 30.4)} month{'s' if d >= 61 else ''} ago"
+    return f"{int(d / 365)} year{'s' if d >= 730 else ''} ago"
+
+# ------------------------------------------------------------------ Flathub (flatpak)
 def flatpak(*args, timeout=600):
     try: return subprocess.run(["flatpak", *args], capture_output=True, text=True, timeout=timeout)
     except Exception as e:
@@ -80,9 +142,17 @@ def catalogue_file():
 def text_of(el):
     return re.sub(r"\s+", " ", "".join(el.itertext())).strip() if el is not None else ""
 
+def paragraphs(desc):
+    out = []
+    if desc is not None:
+        for c in desc:
+            if c.tag == "p": out.append(text_of(c))
+            elif c.tag in ("ul", "ol"): out.append("\n".join("•  " + text_of(li) for li in c.findall("li")))
+    return "\n\n".join(p for p in out if p)
+
 def parse_catalogue(path):
     """Flathub's AppStream catalogue -> compact list of apps (cached, so later opens are instant)."""
-    st = os.stat(path); key = f"{path}:{st.st_mtime_ns}:{st.st_size}:3"
+    st = os.stat(path); key = f"{path}:{st.st_mtime_ns}:{st.st_size}:5"
     cache = os.path.join(CACHE, "index.json")
     try:
         with open(cache) as f:
@@ -104,34 +174,41 @@ def parse_catalogue(path):
                         if c.get(XML_LANG) is None: return text_of(c)
                     return ""
                 desc = next((d for d in el.findall("description") if d.get(XML_LANG) is None), None)
-                paras = []
-                if desc is not None:
-                    for c in desc:
-                        if c.tag == "p": paras.append(text_of(c))
-                        elif c.tag in ("ul", "ol"): paras.append("\n".join("•  " + text_of(li) for li in c.findall("li")))
                 icon = ""
                 for ic in el.findall("icon"):
                     if ic.get("type") == "cached":
                         icon = ic.text.strip() if ic.text else ""
                         if ic.get("width") == "128": break
-                shot = ""
+                shots = []
                 for sc in el.iter("screenshot"):
                     imgs = sc.findall("image")
                     thumbs = sorted((int(i.get("width") or 0), i.text.strip()) for i in imgs if i.get("type") == "thumbnail" and i.text)
-                    pick = [u for w, u in thumbs if 500 <= w <= 1000] or [u for w, u in thumbs] or [i.text.strip() for i in imgs if i.text]
-                    if pick: shot = pick[0]
-                    if sc.get("type") == "default": break
+                    pick = [u for w, u in thumbs if 600 <= w <= 1300] or [u for w, u in thumbs] or [i.text.strip() for i in imgs if i.text]
+                    if pick: shots.insert(0, pick[0]) if sc.get("type") == "default" else shots.append(pick[0])
+                version = ""; updated = 0; news = ""
+                rel = next(el.iter("release"), None)
+                if rel is not None:
+                    version = rel.get("version") or ""
+                    try: updated = int(rel.get("timestamp") or 0)
+                    except ValueError: updated = 0
+                    if not updated and rel.get("date"):
+                        try: updated = int(time.mktime(time.strptime(rel.get("date")[:10], "%Y-%m-%d")))
+                        except ValueError: pass
+                    news = paragraphs(next((d for d in rel.findall("description") if d.get(XML_LANG) is None), None))[:900]
                 dev = el.find("developer")
                 developer = (text_of(dev.find("name")) if dev is not None and dev.find("name") is not None else "") or plain("developer_name")
                 custom = {v.get("key"): (v.text or "") for v in el.iter("value")}
+                brand = {c.get("scheme_preference") or "light": (c.text or "").strip() for c in el.iter("color") if c.get("type") == "primary"}
+                lic = el.findtext("project_license") or ""
                 apps.append({
                     "id": aid, "name": plain("name") or aid, "summary": plain("summary"),
-                    "desc": "\n\n".join(p for p in paras if p)[:4000], "icon": icon, "shot": shot,
-                    "dev": developer, "license": el.findtext("project_license") or "",
+                    "desc": paragraphs(desc)[:4000], "icon": icon, "shots": shots[:6],
+                    "dev": developer, "license": lic, "foss": bool(lic) and "proprietary" not in lic.lower(),
                     "cats": [c.text for c in el.iter("category") if c.text],
                     "kw": " ".join(k.text for k in el.iter("keyword") if k.text and k.get(XML_LANG) is None)[:300],
                     "verified": custom.get("flathub::verification::verified") == "true",
-                    "home": next((u.text for u in el.findall("url") if u.get("type") == "homepage" and u.text), ""),
+                    "urls": {u.get("type"): u.text for u in el.findall("url") if u.text and u.get("type") in ("homepage", "help", "donation", "bugtracker", "vcs-browser")},
+                    "version": version, "updated": updated, "news": news, "brand": brand,
                 })
             el.clear()
     try:
@@ -141,26 +218,49 @@ def parse_catalogue(path):
         pass
     return apps
 
-_fake_installed = {"org.videolan.VLC"}
-def installed_ids():
-    if FAKE: return set(_fake_installed)
-    out = flatpak("list", "--app", "--columns=application").stdout
-    return {l.strip() for l in out.splitlines() if l.strip()}
+_fake_installed = {"org.videolan.VLC": 412_000_000}
+def installed_sizes():
+    """Installed Flathub apps -> size in bytes."""
+    if FAKE: return dict(_fake_installed)
+    out = {}
+    for line in flatpak("list", "--user", "--app", "--columns=application,size").stdout.splitlines():
+        parts = line.split("\t") if "\t" in line else line.split(None, 1)
+        if not parts or "." not in parts[0]: continue
+        size = 0
+        m = re.match(r"\s*([\d.,]+)\s*([kMGT]?)i?B", parts[1].replace("\xa0", " ")) if len(parts) > 1 else None
+        if m:
+            try: size = int(float(m.group(1).replace(",", ".")) * {"": 1, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}[m.group(2)])
+            except ValueError: size = 0
+        out[parts[0].strip()] = size
+    for line in flatpak("list", "--app", "--columns=application").stdout.splitlines():      # system-wide ones too
+        if "." in line: out.setdefault(line.strip(), 0)
+    return out
 
 def update_ids():
-    if FAKE: return {"org.videolan.VLC"} & _fake_installed
+    if FAKE: return {"org.videolan.VLC"} & set(_fake_installed)
     out = flatpak("remote-ls", "--user", "--updates", "--app", "--columns=application", REMOTE).stdout
     return {l.strip() for l in out.splitlines() if l.strip() and "." in l}
 
-def run_job(args, on_line):
-    """Run a flatpak install/remove/update, reporting progress lines. Returns (ok, message)."""
+_size_cache = {}
+def download_size(aid):
+    """(download, installed) sizes as text, asked from Flathub (slow: call from a thread)."""
+    if aid in _size_cache: return _size_cache[aid]
+    if FAKE: res = ("95 MB", "280 MB")
+    else:
+        out = flatpak("remote-info", "--user", REMOTE, aid, timeout=40).stdout
+        g = lambda k: (re.search(rf"^\s*{k}:\s*(.+)$", out, re.M) or [None, ""])[1].replace("\xa0", " ").strip()
+        res = (g("Download"), g("Installed"))
+    _size_cache[aid] = res
+    return res
+
+def run_job(cmd, on_line, fake=None):
+    """Run an install/remove/update command, reporting progress lines. Returns (ok, last line)."""
     if FAKE:
         for i in range(6): time.sleep(0.4); on_line(f"Downloading… {i * 20}%")
-        if args[0] == "install": _fake_installed.add(args[-1])
-        if args[0] == "uninstall": _fake_installed.discard(args[-1])
+        if fake: fake()
         return True, ""
     try:
-        p = subprocess.Popen(["flatpak", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     except OSError as e:
         return False, str(e)
     last = ""
@@ -169,11 +269,64 @@ def run_job(args, on_line):
             part = part.strip()
             if part: last = part; on_line(part)
     p.wait()
+    if p.returncode in (126, 127) and cmd[0] == "pkexec": return False, "cancelled"
     return p.returncode == 0, last
 
-def launch(aid):
+def launch(a):
     if FAKE: return
-    subprocess.Popen(["flatpak", "run", aid], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    cmd = ["flatpak", "run", a["id"]]
+    if a.get("apt"):
+        desk = apt_launcher(a["apt"])
+        try: Gio.DesktopAppInfo.new(desk).launch([], None)
+        except Exception: pass
+        return
+    elif a.get("appimage"): cmd = [a["appimage"]]
+    subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+# ------------------------------------------------------------------ Ubuntu's library (apt)
+APT_SKIP = re.compile(r"^(lib|python3?-|fonts-|ruby-|node-|golang-|r-cran-|php|perl|texlive|linux-|gir1\.2|language-|firmware-|.*-(dev|dbg|dbgsym|doc|data|common|l10n|locale|plugins?|examples|tests?|headers|source|bin)$)")
+def apt_installed(pkg):
+    r = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Status}", pkg], capture_output=True, text=True)
+    return r.stdout.strip() == "installed"
+
+_launcher_cache = {}
+def apt_launcher(pkg):
+    """The app's launcher (.desktop file name) if the package has one."""
+    if pkg not in _launcher_cache:
+        out = subprocess.run(["dpkg", "-L", pkg], capture_output=True, text=True).stdout
+        m = re.search(r"^/usr/share/applications/(.+\.desktop)$", out, re.M)
+        _launcher_cache[pkg] = m.group(1) if m else ""
+    return _launcher_cache[pkg]
+
+def apt_search(q, limit=9):
+    """Apps (not libraries or parts of other packages) in Ubuntu's library whose name matches."""
+    words = [w for w in re.split(r"[^a-z0-9+.]+", q.lower()) if w]
+    if not words or len(q) < 3: return []
+    try: out = subprocess.run(["apt-cache", "search", "--names-only", "--", *words], capture_output=True, text=True, timeout=8).stdout
+    except Exception: return []
+    found = []
+    for line in out.splitlines():
+        pkg, _, desc = line.partition(" - ")
+        if not desc or APT_SKIP.match(pkg): continue
+        score = 0 if pkg == q.lower() else 1 if pkg.startswith(words[0]) else 2
+        found.append((score, len(pkg), pkg, desc))
+    return [apt_app(pkg, desc) for _, _, pkg, desc in sorted(found)[:limit]]
+
+def apt_app(pkg, summary=""):
+    return {"id": "apt:" + pkg, "apt": pkg, "name": pkg.replace("-", " ").title() if len(pkg) > 4 else pkg, "summary": summary[:1].upper() + summary[1:],
+            "desc": "", "icon": "", "shots": [], "dev": "", "license": "", "foss": True, "cats": [], "kw": "", "verified": False, "urls": {},
+            "version": "", "updated": 0, "news": "", "brand": {}}
+
+def apt_details(pkg):
+    """Long description, version, homepage and download size from the package record."""
+    out = subprocess.run(["apt-cache", "show", "--no-all-versions", pkg], capture_output=True, text=True).stdout
+    g = lambda k: (re.search(rf"^{k}: (.+)$", out, re.M) or [None, ""])[1]
+    m = re.search(r"^Description(?:-en)?: .*\n((?: .*\n?)+)", out, re.M)
+    long = "\n".join(l[1:] for l in m.group(1).splitlines()) if m else ""
+    long = re.sub(r"\n\.\n", "\n\n", long); long = re.sub(r"(?<!\n)\n(?![\n \-*])", " ", long)
+    try: size = human(int(g("Size")))
+    except ValueError: size = ""
+    return {"desc": long.strip(), "version": g("Version").split(":")[-1].split("-")[0], "home": g("Homepage"), "size": size}
 
 # ------------------------------------------------------------------ icons and pictures
 _icon_cache = {}
@@ -187,13 +340,17 @@ def app_icon(app, size):
             try: pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(p, size, size, True); break
             except GLib.Error: pass
     if pb is None:
-        try: pb = Gtk.IconTheme.get_default().load_icon("application-x-executable", size, Gtk.IconLookupFlags.FORCE_SIZE)
-        except GLib.Error: pb = None
+        theme = Gtk.IconTheme.get_default()
+        names = ([app["apt"]] if app.get("apt") else []) + (["application-x-executable"] if not app.get("apt") else ["package-x-generic", "application-x-executable"])
+        for name in names:
+            if theme.has_icon(name):
+                try: pb = theme.load_icon(name, size, Gtk.IconLookupFlags.FORCE_SIZE); break
+                except GLib.Error: pass
     _icon_cache[k] = pb
     return pb
 
-def load_picture(url, width, done):
-    """Fetch a screenshot in the background (cached on disk) and hand back a scaled image."""
+def load_picture(url, width, height, done):
+    """Fetch a screenshot in the background (cached on disk) and hand back an image that fits width x height."""
     def work():
         path = os.path.join(CACHE, "shots", hashlib.sha1(url.encode()).hexdigest()[:20])
         try:
@@ -202,10 +359,10 @@ def load_picture(url, width, done):
                 req = urllib.request.Request(url, headers={"User-Agent": "SummitAppStore/1.0"})
                 with urllib.request.urlopen(req, timeout=20) as r, open(path + ".tmp", "wb") as f: f.write(r.read(8 * 1024 * 1024))
                 os.replace(path + ".tmp", path)
-            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, width, -1, True)
+            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, width, height, True)
             GLib.idle_add(done, pb)
         except Exception:
-            pass
+            GLib.idle_add(done, None)
     threading.Thread(target=work, daemon=True).start()
 
 def label(text, cls=None, xalign=0.0, wrap=False, lines=0, sel=False):
@@ -216,56 +373,95 @@ def label(text, cls=None, xalign=0.0, wrap=False, lines=0, sel=False):
     for c in (cls.split() if cls else []): l.get_style_context().add_class(c)
     return l
 
+def style(widget, css):
+    """Give one widget its own bit of CSS (gradients and tints that differ per app or category)."""
+    p = Gtk.CssProvider(); p.load_from_data(css.encode())
+    widget.get_style_context().add_provider(p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+
+def gradient(colors, angle=120):
+    return f"background-image: linear-gradient({angle}deg, {', '.join(colors)});"
+
 CSS = b"""
-.store-card { border-radius: 14px; padding: 12px; background-color: alpha(@theme_fg_color, 0.045); border: 1px solid alpha(@theme_fg_color, 0.06); }
-.store-card:hover { background-color: alpha(@theme_fg_color, 0.08); }
+.store-card { border-radius: 16px; padding: 12px; background-color: alpha(@theme_fg_color, 0.045); border: 1px solid alpha(@theme_fg_color, 0.06);
+              transition: background-color 160ms ease, box-shadow 160ms ease; }
+.store-card:hover { background-color: alpha(@theme_fg_color, 0.09); box-shadow: 0 4px 14px alpha(black, 0.12); }
 .store-name { font-weight: 600; }
 .store-sub { opacity: 0.66; font-size: 0.92em; }
-.store-banner { border-radius: 18px; padding: 22px 26px; color: #ffffff;
-                background-image: linear-gradient(120deg, #5b6cff, #8f5bff 55%, #d65bc7); }
-.store-banner.windows { background-image: linear-gradient(120deg, #1f8fff, #19b2c9 60%, #2fd39a); }
+.store-tick { color: #1a8cff; font-size: 0.9em; }
+.store-banner { border-radius: 20px; padding: 26px 30px; color: #ffffff; }
 .store-banner label { color: #ffffff; }
-.store-banner-title { font-size: 20pt; font-weight: 700; font-family: "Inter Display"; }
-.store-section { font-size: 14pt; font-weight: 700; }
+.store-banner-title { font-size: 22pt; font-weight: 800; font-family: "Inter Display"; }
+.store-banner-text { font-size: 11.5pt; opacity: 0.95; }
+.store-banner button { border-radius: 999px; padding: 4px 18px; font-weight: 700; background-image: none; background-color: alpha(white, 0.24);
+                       color: #ffffff; border: none; box-shadow: none; text-shadow: none; }
+.store-banner button:hover { background-color: alpha(white, 0.36); }
+.store-banner .store-banner-app { border-radius: 16px; padding: 8px 10px; background-color: alpha(white, 0.14); transition: background-color 160ms ease; }
+.store-banner .store-banner-app:hover { background-color: alpha(white, 0.28); }
+.store-dot { min-width: 8px; min-height: 8px; padding: 0; margin: 0 3px; border-radius: 999px; border: none; box-shadow: none;
+             background-image: none; background-color: alpha(@theme_fg_color, 0.22); transition: all 200ms ease; }
+.store-dot.on { background-color: @theme_selected_bg_color; min-width: 20px; }
+.store-tile { border-radius: 16px; padding: 14px 16px; color: #ffffff; font-weight: 700; border: none; box-shadow: none; text-shadow: none;
+              transition: box-shadow 160ms ease, opacity 160ms ease; opacity: 0.94; }
+.store-tile:hover { opacity: 1; box-shadow: 0 6px 16px alpha(black, 0.22); }
+.store-tile label, .store-tile image { color: #ffffff; }
+.store-chip { border-radius: 8px; padding: 4px; color: #ffffff; }
+.store-section { font-size: 14.5pt; font-weight: 700; }
+.store-count { opacity: 0.55; font-size: 10.5pt; }
 button.store-get { border-radius: 999px; padding: 2px 16px; font-weight: 700; min-height: 26px; }
-.store-hero { font-size: 22pt; font-weight: 700; font-family: "Inter Display"; }
-.store-shot { border-radius: 12px; }
+button.store-link { border: none; box-shadow: none; background-image: none; background-color: transparent; padding: 2px 4px; color: @theme_selected_bg_color; font-weight: 600; }
+button.store-link:hover { text-decoration-line: underline; }
+.store-hero { font-size: 23pt; font-weight: 800; font-family: "Inter Display"; }
+.store-head { border-radius: 22px; padding: 24px; }
+.store-fact { border-radius: 14px; padding: 10px 14px; background-color: alpha(@theme_fg_color, 0.05); }
+.store-fact-k { opacity: 0.6; font-size: 0.82em; font-weight: 600; }
+.store-fact-v { font-weight: 700; font-size: 1.04em; }
+.store-shots { border-radius: 16px; background-color: alpha(@theme_fg_color, 0.05); padding: 14px; }
+.store-nav { border-radius: 999px; min-width: 34px; min-height: 34px; padding: 0; background-image: none; background-color: alpha(@theme_bg_color, 0.85);
+             border: 1px solid alpha(@theme_fg_color, 0.12); box-shadow: 0 2px 8px alpha(black, 0.18); }
+.store-note { border-radius: 14px; padding: 14px 16px; background-color: alpha(@theme_selected_bg_color, 0.10); }
+.store-badge { border-radius: 999px; padding: 1px 9px; font-size: 0.82em; font-weight: 700; color: #ffffff; background-color: #ff5f57; }
+.store-source { border-radius: 999px; padding: 1px 9px; font-size: 0.8em; font-weight: 700; background-color: alpha(@theme_fg_color, 0.10); }
 """
 
 # ------------------------------------------------------------------ UI
 class Store(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="App Store")
-        self.set_default_size(1020, 680); self.set_wmclass("summit-appstore", "Summit-appstore")
-        self.apps = []; self.by_id = {}; self.installed = set(); self.updates = set(); self.jobs = {}
-        self.section = "discover"; self.shown = []; self.limit = PAGE
+        self.set_default_size(1080, 720); self.set_wmclass("summit-appstore", "Summit-appstore")
+        self.apps = []; self.by_id = {}; self.sizes = {}; self.installed = set(); self.updates = set(); self.jobs = {}
+        self.section = "discover"; self.limit = PAGE; self.sort = "popular"; self.only_verified = False; self.only_foss = False
+        self.state = load_state(); self.history = []; self.hero_timer = 0; self.search_timer = 0; self.apt_hits = []; self.current = None; self.quiet_search = False
 
-        # Summit's own title bar (traffic-light buttons), with a toolbar row for Back and Search
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); self.add(outer)
         bar = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=8, margin_bottom=8)
         self.back = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
-        self.back.set_tooltip_text("Back"); self.back.connect("clicked", lambda *_: self.show_list()); bar.pack_start(self.back, False, False, 0)
+        self.back.set_tooltip_text("Back"); self.back.connect("clicked", lambda *_: self.go_back()); bar.pack_start(self.back, False, False, 0)
+        opts = Gtk.MenuButton(tooltip_text="Options"); opts.set_image(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
+        opts.set_popover(self.options_popover(opts)); bar.pack_end(opts, False, False, 0)
         self.search = Gtk.SearchEntry(placeholder_text="Search apps", width_chars=30)
         self.search.connect("search-changed", lambda *_: self.on_search()); bar.pack_end(self.search, False, False, 0)
+        self.sort_btn = Gtk.MenuButton(tooltip_text="Sort and filter"); self.sort_btn.set_image(Gtk.Image.new_from_icon_name("view-sort-descending-symbolic", Gtk.IconSize.BUTTON))
+        self.sort_btn.set_popover(self.sort_popover(self.sort_btn)); bar.pack_end(self.sort_btn, False, False, 0)
         outer.pack_start(bar, False, False, 0); outer.pack_start(Gtk.Separator(), False, False, 0)
         self.connect("key-press-event", self.on_key)
 
         root = Gtk.Box(); outer.pack_start(root, True, True, 0)
         side = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE); side.get_style_context().add_class("summit-sidebar")
-        side.set_size_request(210, -1); side.set_margin_top(10)
+        side.set_size_request(224, -1); side.set_margin_top(10)
         self.rows = {}
-        for key, title, icon, _ in SECTIONS:
+        for key, title, icon, _, colors in SECTIONS:
             if key is None:
                 sep = Gtk.ListBoxRow(selectable=False, activatable=False); sep.add(Gtk.Separator(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)); side.add(sep); continue
             r = Gtk.ListBoxRow(); b = Gtk.Box(spacing=10)
-            b.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0); b.pack_start(label(title), False, False, 0)
+            chip = Gtk.Box(); chip.get_style_context().add_class("store-chip"); style(chip, "* { " + gradient(colors, 135) + " }")
+            chip.add(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU)); b.pack_start(chip, False, False, 0)
+            b.pack_start(label(title), False, False, 0)
             r.add(b); r.key = key; side.add(r); self.rows[key] = r
         side.connect("row-selected", self.on_section); self.side = side
         root.pack_start(side, False, False, 0); root.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
 
-        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=150)
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=180)
         root.pack_start(self.stack, True, True, 0)
-        # loading / message page
         msg = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
         self.spinner = Gtk.Spinner(); self.spinner.set_size_request(32, 32); msg.pack_start(self.spinner, False, False, 0)
         self.msg = label("", "store-section", xalign=0.5, wrap=True); self.msg.set_max_width_chars(48); msg.pack_start(self.msg, False, False, 0)
@@ -273,28 +469,70 @@ class Store(Gtk.ApplicationWindow):
         self.retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER); self.retry.connect("clicked", lambda *_: self.load(force=True))
         msg.pack_start(self.retry, False, False, 0)
         self.stack.add_named(msg, "message")
-        # list page
-        self.list_sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=24)
-        self.list_sc.add(self.list_box); self.stack.add_named(self.list_sc, "list")
-        # detail page
-        self.detail_sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        self.stack.add_named(self.detail_sc, "detail")
+        # two list pages and two detail pages, so moving between them can always animate from one to the other
+        self.pages = {}
+        for name in ("list-a", "list-b", "detail-a", "detail-b"):
+            sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER); self.stack.add_named(sc, name); self.pages[name] = sc
+        self.list_name = "list-a"; self.detail_name = "detail-a"
 
         prov = Gtk.CssProvider(); prov.load_from_data(CSS)
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        self.show_all(); self.back.hide(); self.retry.hide()
+        self.connect("destroy", lambda *_: self.stop_hero())
+        self.show_all(); self.back.hide(); self.retry.hide(); self.sort_btn.hide()
         self.side.select_row(self.rows["discover"])
         self.load()
+
+    # ---- the two menus in the toolbar
+    def sort_popover(self, parent):
+        pop = Gtk.Popover.new(parent); box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin=12)
+        box.pack_start(label("Sort by", "summit-subtle"), False, False, 0)
+        first = None
+        for key, title in SORTS:
+            rb = Gtk.RadioButton.new_with_label_from_widget(first, title); first = first or rb
+            rb.connect("toggled", lambda b, k=key: b.get_active() and self.set_view(sort=k)); box.pack_start(rb, False, False, 0)
+        box.pack_start(Gtk.Separator(margin_top=6, margin_bottom=6), False, False, 0)
+        box.pack_start(label("Show only", "summit-subtle"), False, False, 0)
+        for attr, title in (("only_verified", "Verified by the developer"), ("only_foss", "Free and open source")):
+            cb = Gtk.CheckButton(label=title); cb.connect("toggled", lambda b, a=attr: self.set_view(**{a: b.get_active()})); box.pack_start(cb, False, False, 0)
+        box.show_all(); pop.add(box); return pop
+
+    def set_view(self, **kv):
+        for k, v in kv.items(): setattr(self, k, v)
+        self.limit = PAGE
+        if self.apps and not self.on_detail(): self.show_list(animate=False)
+
+    def options_popover(self, parent):
+        pop = Gtk.Popover.new(parent); box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=12)
+        def switch_row(title, sub, active, cb):
+            row = Gtk.Box(spacing=14); t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            t.pack_start(label(title, "store-name"), False, False, 0); s = label(sub, "store-sub", wrap=True); s.set_max_width_chars(36); t.pack_start(s, False, False, 0)
+            sw = Gtk.Switch(active=active, valign=Gtk.Align.CENTER); sw.connect("notify::active", lambda w, _p: cb(w.get_active()))
+            row.pack_start(t, True, True, 0); row.pack_end(sw, False, False, 0); return row
+        box.pack_start(switch_row("Update apps automatically", "Once a day, quietly, in the background.", auto_updates_on(), set_auto_updates), False, False, 0)
+        box.pack_start(Gtk.Separator(margin_top=4, margin_bottom=4), False, False, 0)
+        box.pack_start(switch_row("Search Ubuntu's library too", "Also find apps from the system's own software library. Installing those asks for your password.",
+                                  self.state["search_ubuntu"], self.set_search_ubuntu), False, False, 0)
+        box.pack_start(Gtk.Separator(margin_top=4, margin_bottom=4), False, False, 0)
+        for title, cb in (("Install from a File…", self.pick_file), ("Free Up Space", self.free_space), ("Refresh the Catalogue", lambda: self.load(force=True))):
+            b = Gtk.Button(label=title, relief=Gtk.ReliefStyle.NONE, halign=Gtk.Align.FILL)
+            b.get_child().set_xalign(0.0)
+            b.connect("clicked", lambda _b, c=cb: (pop.popdown(), c())); box.pack_start(b, False, False, 0)
+        box.show_all(); pop.add(box); return pop
+
+    def set_search_ubuntu(self, on):
+        self.state["search_ubuntu"] = bool(on); save_state(self.state)
+        if self.search.get_text(): self.on_search()
 
     def on_key(self, w, e):
         # typing anywhere searches; Esc or Alt+Left goes back
         if e.keyval == Gdk.KEY_Escape or (e.keyval == Gdk.KEY_Left and e.state & Gdk.ModifierType.MOD1_MASK):
-            if self.back.get_visible(): self.show_list(); return True
+            if self.back.get_visible(): self.go_back(); return True
         if self.search.has_focus() or not Gdk.keyval_to_unicode(e.keyval) or e.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK):
             return False
         self.search.grab_focus_without_selecting()
         return self.search.handle_event(e)
+
+    def on_detail(self): return (self.stack.get_visible_child_name() or "").startswith("detail")
 
     # ---- loading
     def message(self, title, sub="", busy=False, retry=False):
@@ -314,43 +552,95 @@ class Store(Gtk.ApplicationWindow):
             try: apps = parse_catalogue(path)
             except Exception as e:
                 GLib.idle_add(self.message, "The app catalogue couldn't be read", str(e)[:200], False, True); return
-            inst = installed_ids(); ups = update_ids()
-            GLib.idle_add(self.loaded, apps, inst, ups)
+            sizes = installed_sizes(); ups = update_ids()
+            GLib.idle_add(self.loaded, apps, sizes, ups)
         threading.Thread(target=work, daemon=True).start()
 
-    def loaded(self, apps, inst, ups):
-        self.apps = apps; self.by_id = {a["id"]: a for a in apps}; self.installed = inst; self.updates = ups & inst
+    def loaded(self, apps, sizes, ups):
+        self.apps = apps; self.by_id = {a["id"]: a for a in apps}; self.set_installed(sizes); self.updates = ups & self.installed
         self.update_badge()
-        want = self.get_application().pending_show
-        if want and want in self.by_id: self.show_detail(self.by_id[want])
-        elif self.get_application().pending_updates: self.side.select_row(self.rows["updates"])
-        else: self.show_list()
+        app = self.get_application()
+        if app.pending_file: f = app.pending_file; app.pending_file = None; self.show_list(animate=False); self.install_file(f)
+        elif app.pending_show and app.pending_show in self.by_id: self.show_detail(self.by_id[app.pending_show])
+        elif app.pending_updates: self.side.select_row(self.rows["updates"])
+        else: self.show_list(animate=False)
+
+    def set_installed(self, sizes):
+        self.sizes = sizes; self.installed = set(sizes)
+        for pkg in list(self.state["apt"]):
+            if FAKE or apt_installed(pkg): self.installed.add("apt:" + pkg)
+            else: self.state["apt"].pop(pkg)
+        for name, path in list(self.state["appimages"].items()):
+            if os.path.exists(path): self.installed.add("appimage:" + name)
+            else: self.state["appimages"].pop(name)
+
+    def other_apps(self):
+        """Apps the store installed from Ubuntu's library or from an AppImage file."""
+        out = [dict(apt_app(pkg, "From Ubuntu's library"), name=name) for pkg, name in self.state["apt"].items() if "apt:" + pkg in self.installed]
+        for name, path in self.state["appimages"].items():
+            if "appimage:" + name in self.installed:
+                out.append(dict(apt_app(name, "AppImage in your Applications folder"), id="appimage:" + name, apt=None, appimage=path, name=name))
+        return out
 
     def update_badge(self):
         r = self.rows["updates"]; b = r.get_child()
         for c in b.get_children()[2:]: b.remove(c)
         if self.updates:
-            n = label(str(len(self.updates)), "summit-subtle"); b.pack_end(n, False, False, 8); n.show()
+            n = label(str(len(self.updates)), "store-badge"); n.set_valign(Gtk.Align.CENTER); b.pack_end(n, False, False, 8); n.show()
 
-    # ---- lists
+    # ---- moving around
     def on_section(self, _lb, row):
         if row is None: return
-        self.section = row.key; self.limit = PAGE
-        if self.search.get_text(): self.search.set_text("")
+        self.section = row.key; self.limit = PAGE; self.history.clear()
+        if self.search.get_text(): self.quiet_search = True; self.search.set_text("")
         if self.apps: self.show_list()
 
     def on_search(self):
-        self.limit = PAGE
-        if self.apps: self.show_list()
+        if self.quiet_search: self.quiet_search = False; return        # cleared by choosing a section: already shown
+        if self.search_timer: GLib.source_remove(self.search_timer)
+        def fire():
+            self.search_timer = 0; self.limit = PAGE; self.history.clear()
+            if self.apps: self.show_list(animate=False)
+            return False
+        self.search_timer = GLib.timeout_add(180, fire)
+
+    def go_back(self):
+        if self.history: self.show_detail(self.history.pop(), push=False, back=True)
+        else: self.show_list(back=True)
+
+    def go_section(self, key):
+        self.side.select_row(self.rows[key])
+
+    def switch(self, kind, child, how):
+        """Show a freshly built page. `how`: forward and back slide, anything else crossfades."""
+        name = ("list-b" if self.list_name == "list-a" else "list-a") if kind == "list" else ("detail-b" if self.detail_name == "detail-a" else "detail-a")
+        if not how: name = self.list_name if kind == "list" else self.detail_name          # refresh in place
+        sc = self.pages[name]
+        old = sc.get_child()
+        if old: sc.remove(old); old.destroy()
+        sc.add(child); child.show_all(); sc.get_vadjustment().set_value(0)
+        if kind == "list": self.list_name = name
+        else: self.detail_name = name
+        t = {"forward": Gtk.StackTransitionType.SLIDE_LEFT, "back": Gtk.StackTransitionType.SLIDE_RIGHT}.get(how, Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_visible_child_full(name, t)
+
+    # ---- lists
+    def rank(self, items):
+        if self.only_verified: items = [a for a in items if a.get("verified")]
+        if self.only_foss: items = [a for a in items if a.get("foss")]
+        if self.sort == "name": key = lambda a: a["name"].lower()
+        elif self.sort == "updated": key = lambda a: (-a.get("updated", 0), a["name"].lower())
+        else: key = lambda a: (a["id"] not in POPULAR, not a.get("verified"), a["name"].lower())
+        return sorted(items, key=key)
 
     def apps_for(self, key):
-        cats = dict((k, c) for k, _, _, c in SECTIONS if k)
-        rank = lambda a: (a["id"] not in POPULAR, not a["verified"], a["name"].lower())
-        if key == "installed": return sorted((self.by_id.get(i) or {"id": i, "name": i, "summary": "", "icon": "", "verified": False} for i in self.installed), key=rank)
-        if key == "updates": return sorted((self.by_id[i] for i in self.updates if i in self.by_id), key=rank)
+        if key == "installed":
+            flat = [self.by_id.get(i) or dict(apt_app(i), id=i, apt=None, name=i) for i in self.installed if ":" not in i]
+            return sorted(flat + self.other_apps(), key=lambda a: a["name"].lower())
+        if key == "updates": return sorted((self.by_id[i] for i in self.updates if i in self.by_id), key=lambda a: a["name"].lower())
         if key == "windows": return [self.by_id[i] for i in WINDOWS if i in self.by_id]
-        want = cats.get(key) or set()
-        return sorted((a for a in self.apps if want & set(a["cats"])), key=rank)
+        want = next((c for k, _, _, c, _ in SECTIONS if k == key), None) or set()
+        return self.rank([a for a in self.apps if want & set(a["cats"])])
 
     def search_results(self, q):
         q = q.lower().strip(); words = q.split()
@@ -358,78 +648,169 @@ class Store(Gtk.ApplicationWindow):
         for a in self.apps:
             name = a["name"].lower(); hay = f"{name} {a['summary'].lower()} {a['kw'].lower()} {a['id'].lower()}"
             if not all(w in hay for w in words): continue
+            if (self.only_verified and not a["verified"]) or (self.only_foss and not a["foss"]): continue
             s = 100 if name == q else 60 if name.startswith(q) else 40 if q in name else 10
             s += 8 if a["id"] in POPULAR else 0; s += 3 if a["verified"] else 0
             out.append((-s, a["name"].lower(), a))
         return [a for _, _, a in sorted(out, key=lambda t: t[:2])]
 
-    def clear(self, box):
-        for c in box.get_children(): box.remove(c); c.destroy()
+    def stop_hero(self):
+        if self.hero_timer: GLib.source_remove(self.hero_timer); self.hero_timer = 0
 
-    def show_list(self):
-        self.back.hide()
-        box = self.list_box; self.clear(box)
+    def show_list(self, animate=True, back=False, keep_scroll=False):
+        self.stop_hero(); self.back.hide(); self.current = None
+        was_detail = self.on_detail()
+        y = self.pages[self.list_name].get_vadjustment().get_value() if keep_scroll else 0
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=24)
         q = self.search.get_text().strip()
-        if q:
-            items = self.search_results(q)
-            box.pack_start(label(f"Results for “{q}”", "store-section"), False, False, 0)
-            self.grid(box, items, empty="No apps found. Try another word.")
-        elif self.section == "discover":
-            ban = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6); ban.get_style_context().add_class("store-banner")
-            ban.pack_start(label("Thousands of apps, one click away", "store-banner-title"), False, False, 0)
-            ban.pack_start(label("Apps from Flathub install just for you and run in their own sandbox. Uninstall any time.", wrap=True), False, False, 0)
-            box.pack_start(ban, False, False, 0)
-            box.pack_start(label("Popular apps", "store-section"), False, False, 0)
-            self.grid(box, [self.by_id[i] for i in FEATURED if i in self.by_id], paged=False)
-            win = Gtk.Box(spacing=18); win.get_style_context().add_class("store-banner"); win.get_style_context().add_class("windows")
-            t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            t.pack_start(label("Run Windows apps", "store-banner-title"), False, False, 0)
-            t.pack_start(label("Bottles runs many Windows programs (.exe) on Summit. Double-click an installer and pick Bottles.", wrap=True), False, False, 0)
-            win.pack_start(t, True, True, 0)
-            if "com.usebottles.bottles" in self.by_id:
-                b = Gtk.Button(label="Get Bottles", valign=Gtk.Align.CENTER); b.get_style_context().add_class("store-get")
-                b.connect("clicked", lambda *_: self.show_detail(self.by_id["com.usebottles.bottles"])); win.pack_end(b, False, False, 0)
-            box.pack_start(win, False, False, 0)
-        else:
-            title = dict((k, t) for k, t, _, _ in SECTIONS if k)[self.section]
-            head = Gtk.Box(spacing=12); head.pack_start(label(title, "store-section"), False, False, 0)
-            items = self.apps_for(self.section)
-            if self.section == "updates" and items:
-                b = Gtk.Button(label="Update All"); b.get_style_context().add_class("suggested-action")
-                b.connect("clicked", lambda *_: self.update_all(b)); head.pack_end(b, False, False, 0)
-            box.pack_start(head, False, False, 0)
-            if self.section == "windows":
-                box.pack_start(label("These apps run Windows software on Summit. Bottles is the easiest: it sets up a "
-                                     "small Windows environment for each program. Games launchers and simple programs work best; "
-                                     "recent Microsoft Office and Adobe apps usually don't.", "summit-subtle", wrap=True), False, False, 0)
-            empty = {"installed": "Apps you install from the App Store appear here.",
-                     "updates": "Everything is up to date."}.get(self.section, "Nothing here yet.")
-            self.grid(box, items, empty=empty)
-        box.show_all(); self.stack.set_visible_child_name("list")
-        self.list_sc.get_vadjustment().set_value(0)
+        self.sort_btn.set_visible(bool(q) or self.section not in ("discover", "windows", "installed", "updates"))
+        if q: self.build_search(box, q)
+        elif self.section == "discover": self.build_discover(box)
+        elif self.section == "installed": self.build_installed(box)
+        else: self.build_category(box)
+        self.switch("list", box, "back" if back and was_detail else ("fade" if animate and not keep_scroll else None))
+        if keep_scroll: GLib.idle_add(lambda: self.pages[self.list_name].get_vadjustment().set_value(y) and False)
 
-    def grid(self, box, items, empty="", paged=True):
+    def heading(self, box, title, count=None, *widgets):
+        head = Gtk.Box(spacing=10); head.pack_start(label(title, "store-section"), False, False, 0)
+        if count is not None:
+            c = label(f"{count:,} app{'s' if count != 1 else ''}", "store-count"); c.set_valign(Gtk.Align.END); c.set_margin_bottom(3); head.pack_start(c, False, False, 0)
+        for w in widgets: head.pack_end(w, False, False, 0)
+        box.pack_start(head, False, False, 0)
+
+    def build_search(self, box, q):
+        items = self.rank(self.search_results(q)) if self.sort != "popular" else self.search_results(q)
+        self.heading(box, f"Results for “{q}”", len(items))
+        self.grid(box, items, empty="No apps on Flathub match. Try another word.")
+        if self.state["search_ubuntu"] and (not FAKE or os.environ.get("SUMMIT_APPSTORE_FAKE_APT")):
+            holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12); box.pack_start(holder, False, False, 0)
+            def work():
+                hits = [apt_app(p, "A sample package") for p in os.environ.get("SUMMIT_APPSTORE_FAKE_APT", "").split(",") if q in p] if FAKE else apt_search(q)
+                names = {a["name"].lower() for a in items[:30]}
+                GLib.idle_add(got, [h for h in hits if h["apt"] not in names and h["name"].lower() not in names])
+            def got(hits):
+                if self.search.get_text().strip() != q or not hits or not holder.get_parent(): return False
+                self.apt_hits = hits
+                self.heading(holder, "From Ubuntu's library")
+                holder.pack_start(label("Part of the system's own software collection. Installing one asks for your password.", "summit-subtle", wrap=True), False, False, 0)
+                self.grid(holder, hits, paged=False); holder.show_all(); return False
+            threading.Thread(target=work, daemon=True).start()
+
+    def build_discover(self, box):
+        # the rotating banner
+        hero = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=450)
+        dots = Gtk.Box(halign=Gtk.Align.CENTER); dot_btns = []
+        stories = [s for s in STORIES if any(i in self.by_id for i in s[3])] or STORIES[:1]
+        for n, (title, text, colors, ids, target) in enumerate(stories):
+            ban = Gtk.Box(spacing=24); ban.get_style_context().add_class("store-banner"); style(ban, "* { " + gradient(colors) + " }")
+            t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.CENTER)
+            t.pack_start(label(title, "store-banner-title", wrap=True), False, False, 0)
+            tx = label(text, "store-banner-text", wrap=True); tx.set_max_width_chars(46); t.pack_start(tx, False, False, 0)
+            if target:
+                b = Gtk.Button(label=f"See {TITLES[target]}", halign=Gtk.Align.START, margin_top=6); b.connect("clicked", lambda _b, k=target: self.go_section(k)); t.pack_start(b, False, False, 0)
+            ban.pack_start(t, True, True, 0)
+            icons = Gtk.Box(spacing=10, valign=Gtk.Align.CENTER)
+            for i in ids:
+                a = self.by_id.get(i)
+                if not a: continue
+                eb = Gtk.EventBox(); eb.get_style_context().add_class("store-banner-app"); v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                pb = app_icon(a, 64); v.pack_start(Gtk.Image.new_from_pixbuf(pb) if pb else Gtk.Image(), False, False, 0)
+                nm = label(a["name"], xalign=0.5, lines=1); nm.set_max_width_chars(11); nm.set_width_chars(11); v.pack_start(nm, False, False, 0)
+                eb.add(v); eb.connect("button-release-event", lambda _w, _e, a=a: self.show_detail(a)); eb.set_tooltip_text(a.get("summary") or a["name"])
+                icons.pack_start(eb, False, False, 0)
+            ban.pack_end(icons, False, False, 0)
+            hero.add_named(ban, str(n))
+            d = Gtk.Button(); d.get_style_context().add_class("store-dot"); d.connect("clicked", lambda _b, n=n: show(n)); dots.pack_start(d, False, False, 0); dot_btns.append(d)
+        def show(n):
+            hero.set_visible_child_name(str(n))
+            for i, d in enumerate(dot_btns): (d.get_style_context().add_class if i == n else d.get_style_context().remove_class)("on")
+        def rotate():
+            if not hero.get_mapped() or not self.is_active(): return True
+            show((int(hero.get_visible_child_name() or 0) + 1) % len(stories)); return True
+        box.pack_start(hero, False, False, 0)
+        if len(stories) > 1:
+            box.pack_start(dots, False, False, 0); self.hero_timer = GLib.timeout_add_seconds(7, rotate)
+        GLib.idle_add(lambda: show(0) and False)
+
+        # categories as colour tiles
+        self.heading(box, "Browse by category")
+        tiles = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=3, max_children_per_line=5, column_spacing=10, row_spacing=10)
+        for key, title, icon, cats, colors in SECTIONS:
+            if not cats and key != "windows": continue
+            b = Gtk.Button(); b.get_style_context().add_class("store-tile"); style(b, "* { " + gradient(colors, 135) + " }")
+            h = Gtk.Box(spacing=8); h.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR), False, False, 0); h.pack_start(label(title, lines=1), False, False, 0)
+            b.add(h); b.connect("clicked", lambda _b, k=key: self.go_section(k)); tiles.add(b)
+        box.pack_start(tiles, False, False, 0)
+
+        self.heading(box, "Popular apps")
+        self.grid(box, [self.by_id[i] for i in FEATURED if i in self.by_id][:12], paged=False)
+        fresh = sorted((a for a in self.apps if a.get("updated") and (a["id"] in POPULAR or a["verified"])), key=lambda a: -a["updated"])[:9]
+        if fresh:
+            self.heading(box, "Recently updated")
+            self.grid(box, fresh, paged=False, sub=lambda a: f"Updated {ago(a['updated'])}" + (f"  ·  version {a['version']}" if a.get("version") else ""))
+        games = [self.by_id[i] for i in ("com.valvesoftware.Steam", "org.libretro.RetroArch", "com.heroicgameslauncher.hgl", "net.lutris.Lutris",
+                                         "org.prismlauncher.PrismLauncher", "org.DolphinEmu.dolphin-emu", "net.pcsx2.PCSX2", "org.ppsspp.PPSSPP", "com.usebottles.bottles") if i in self.by_id]
+        if len(games) >= 3:
+            self.heading(box, "Games and classic consoles")
+            self.grid(box, games[:9], paged=False)
+
+    def build_category(self, box):
+        items = self.apps_for(self.section); colors = COLORS[self.section]
+        if self.section == "updates":
+            extra = []
+            if items:
+                b = Gtk.Button(label="Update All"); b.get_style_context().add_class("suggested-action"); b.connect("clicked", lambda *_: self.update_all(b)); extra.append(b)
+            self.heading(box, "Updates", len(items) if items else None, *extra)
+            note = label("Apps update automatically once a day." if auto_updates_on() else "Turn on “Update apps automatically” in Options (the menu button, top right) to have this done for you.", "summit-subtle", wrap=True)
+            box.pack_start(note, False, False, 0)
+            self.grid(box, items, empty="Everything is up to date.")
+            return
+        ban = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4); ban.get_style_context().add_class("store-banner"); style(ban, "* { " + gradient(colors) + " padding: 18px 24px; }")
+        ban.pack_start(label(TITLES[self.section], "store-banner-title"), False, False, 0)
+        text = {"windows": "These apps run Windows software on Summit. Bottles is the easiest: it sets up a small Windows environment for each program. "
+                           "Game launchers and simple programs work best; recent Microsoft Office and Adobe apps usually don't."}.get(self.section, f"{len(items):,} apps" + (
+                           " match your filters" if self.only_verified or self.only_foss else ""))
+        ban.pack_start(label(text, "store-banner-text", wrap=True), False, False, 0)
+        box.pack_start(ban, False, False, 0)
+        self.grid(box, items, empty="Nothing here with these filters. Change them with the sort button, top right." if self.only_verified or self.only_foss else "Nothing here yet.",
+                  sub=(lambda a: f"Updated {ago(a['updated'])}") if self.sort == "updated" else None)
+
+    def build_installed(self, box):
+        items = self.apps_for("installed"); total = sum(self.sizes.get(a["id"], 0) for a in items)
+        free = Gtk.Button(label="Free Up Space"); free.set_tooltip_text("Remove shared parts that no installed app uses any more"); free.connect("clicked", lambda *_: self.free_space())
+        self.heading(box, "Installed", len(items) if items else None, free)
+        if total: box.pack_start(label(f"Apps from the App Store use {human(total)}.", "summit-subtle"), False, False, 0)
+        def sub(a):
+            if a.get("apt"): return "From Ubuntu's library"
+            if a.get("appimage"): return "AppImage file"
+            s = self.sizes.get(a["id"], 0); bits = [human(s)] if s else []
+            if a["id"] in self.updates: bits.append("update available")
+            return "  ·  ".join(bits) or a.get("summary", "")
+        self.grid(box, items, empty="Apps you install from the App Store appear here.", sub=sub)
+
+    def grid(self, box, items, empty="", paged=True, sub=None):
         if not items:
-            box.pack_start(label(empty, "summit-subtle"), False, False, 0); return
+            box.pack_start(label(empty, "summit-subtle", wrap=True), False, False, 0); return
         flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=2,
                            max_children_per_line=3, column_spacing=12, row_spacing=12)
         show = items[:self.limit] if paged else items
-        for a in show: flow.add(self.card(a))
+        for a in show: flow.add(self.card(a, sub(a) if sub else None))
         box.pack_start(flow, False, False, 0)
         if paged and len(items) > len(show):
-            more = Gtk.Button(label=f"Show More ({len(items) - len(show)} more)", halign=Gtk.Align.CENTER)
-            def more_cb(*_):
-                self.limit += PAGE; y = self.list_sc.get_vadjustment().get_value(); self.show_list()
-                GLib.idle_add(lambda: self.list_sc.get_vadjustment().set_value(y))
+            more = Gtk.Button(label=f"Show More ({len(items) - len(show):,} more)", halign=Gtk.Align.CENTER)
+            def more_cb(*_): self.limit += PAGE; self.show_list(keep_scroll=True)
             more.connect("clicked", more_cb); box.pack_start(more, False, False, 0)
 
-    def card(self, a):
+    def card(self, a, sub=None):
         ev = Gtk.EventBox(); ev.get_style_context().add_class("store-card")
         b = Gtk.Box(spacing=12); ev.add(b)
         pb = app_icon(a, 56); b.pack_start(Gtk.Image.new_from_pixbuf(pb) if pb else Gtk.Image(), False, False, 0)
         t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, valign=Gtk.Align.CENTER)
-        t.pack_start(label(a["name"], "store-name", lines=1), False, False, 0)
-        t.pack_start(label(a.get("summary", ""), "store-sub", lines=2, wrap=True), False, False, 0)
+        n = Gtk.Box(spacing=5); n.pack_start(label(a["name"], "store-name", lines=1), False, False, 0)
+        if a.get("verified"):
+            tick = label("✓", "store-tick"); tick.set_tooltip_text("Published by its own developer"); n.pack_start(tick, False, False, 0)
+        t.pack_start(n, False, False, 0)
+        t.pack_start(label(sub if sub is not None else a.get("summary", ""), "store-sub", lines=2, wrap=True), False, False, 0)
         b.pack_start(t, True, True, 0)
         b.pack_end(self.action_button(a, small=True), False, False, 0)
         ev.connect("button-release-event", lambda *_: self.show_detail(a))
@@ -441,53 +822,147 @@ class Store(Gtk.ApplicationWindow):
         if aid in self.jobs:
             sp = Gtk.Spinner(valign=Gtk.Align.CENTER); sp.start(); return sp
         if aid in self.installed:
-            b = Gtk.Button(label="Update" if aid in self.updates else "Open", valign=Gtk.Align.CENTER)
-            b.connect("clicked", lambda *_: self.install(aid) if aid in self.updates else launch(aid))
+            can_open = not a.get("apt") or bool(apt_launcher(a["apt"])) or FAKE
+            b = Gtk.Button(label="Update" if aid in self.updates else "Open" if can_open else "Installed", valign=Gtk.Align.CENTER)
+            b.set_sensitive(aid in self.updates or can_open)
+            b.connect("clicked", lambda *_: self.install(a) if aid in self.updates else launch(a))
         else:
-            b = Gtk.Button(label="Get", valign=Gtk.Align.CENTER); b.connect("clicked", lambda *_: self.install(aid))
+            b = Gtk.Button(label="Get", valign=Gtk.Align.CENTER); b.connect("clicked", lambda *_: self.install(a))
         b.get_style_context().add_class("store-get")
         if aid not in self.installed or aid in self.updates: b.get_style_context().add_class("suggested-action")
         return b
 
     # ---- detail
-    def show_detail(self, a):
-        self.current = a; self.back.show()
-        old = self.detail_sc.get_child()
-        if old: self.detail_sc.remove(old); old.destroy()
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=28)
-        top = Gtk.Box(spacing=20)
-        pb = app_icon(a, 112); top.pack_start(Gtk.Image.new_from_pixbuf(pb) if pb else Gtk.Image(), False, False, 0)
+    def show_detail(self, a, push=True, back=False):
+        self.stop_hero()
+        if push and self.current is not None and self.current is not a: self.history.append(self.current)
+        self.current = a; self.back.show(); self.sort_btn.hide()
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=24)
+        # header, tinted with the app's own colour when it has one
+        dark = Gtk.Settings.get_default().get_property("gtk-theme-name").lower().endswith("dark")
+        tint = a.get("brand", {}).get("dark" if dark else "light") or a.get("brand", {}).get("light") or ""
+        head = Gtk.Box(spacing=20); head.get_style_context().add_class("store-head")
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", tint):
+            style(head, f"* {{ background-image: linear-gradient(120deg, alpha({tint}, 0.34), alpha({tint}, 0.10)); }}")
+        else:
+            style(head, "* { background-color: alpha(@theme_fg_color, 0.045); }")
+        pb = app_icon(a, 112); head.pack_start(Gtk.Image.new_from_pixbuf(pb) if pb else Gtk.Image(), False, False, 0)
         info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
         info.pack_start(label(a["name"], "store-hero", wrap=True), False, False, 0)
         if a.get("summary"): info.pack_start(label(a["summary"], wrap=True), False, False, 0)
-        by = a.get("dev") or ""
-        if a.get("verified"): by = (by + "  ·  " if by else "") + "✓ Verified"
-        if by: info.pack_start(label(by, "summit-subtle"), False, False, 0)
-        top.pack_start(info, True, True, 0)
+        by = Gtk.Box(spacing=8)
+        if a.get("dev"): by.pack_start(label(a["dev"], "summit-subtle"), False, False, 0)
+        if a.get("verified"): by.pack_start(label("✓ Verified", "store-tick"), False, False, 0)
+        src = label("Ubuntu" if a.get("apt") else "AppImage" if a.get("appimage") else "Flathub", "store-source"); by.pack_start(src, False, False, 0)
+        info.pack_start(by, False, False, 0)
+        head.pack_start(info, True, True, 0)
         acts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.CENTER)
         self.detail_actions = acts; self.fill_actions(a)
-        top.pack_end(acts, False, False, 0)
-        page.pack_start(top, False, False, 0)
+        head.pack_end(acts, False, False, 0)
+        page.pack_start(head, False, False, 0)
         self.progress = Gtk.ProgressBar(show_text=True); self.progress.set_no_show_all(True); page.pack_start(self.progress, False, False, 0)
-        if a.get("shot"):
-            holder = Gtk.Box(); page.pack_start(holder, False, False, 0)
-            def got(pb):
-                if self.current is a: img = Gtk.Image.new_from_pixbuf(pb); img.get_style_context().add_class("store-shot"); holder.pack_start(img, False, False, 0); img.show()
-                return False
-            load_picture(a["shot"], 640, got)
-        if a.get("desc"): page.pack_start(label(a["desc"], wrap=True, sel=True), False, False, 0)
-        facts = []
+
+        # quick facts
+        facts = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=3, max_children_per_line=5, column_spacing=10, row_spacing=10)
+        values = {}
+        def fact(k, v):
+            b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1); b.get_style_context().add_class("store-fact")
+            b.pack_start(label(k.upper(), "store-fact-k"), False, False, 0); l = label(v, "store-fact-v", lines=1); b.pack_start(l, False, False, 0)
+            facts.add(b); values[k] = l
+        if a.get("version") or a.get("apt"): fact("Version", a.get("version") or "…")
+        if a.get("updated"): fact("Updated", ago(a["updated"]).capitalize())
+        if not a.get("appimage"): fact("Size", human(self.sizes[a["id"]]) if self.sizes.get(a["id"]) else "…")
+        if a.get("license"): fact("License", "Open source" if a.get("foss") else "Proprietary")
+        cat = next((t for k, t, _, c, _ in SECTIONS if c and c & set(a.get("cats", []))), "")
+        if cat: fact("Category", cat)
+        page.pack_start(facts, False, False, 0)
+
+        # screenshots: a small gallery that fades between pictures
+        if a.get("shots"): page.pack_start(self.gallery(a), False, False, 0)
+        desc = label(a.get("desc") or "", wrap=True, sel=True); page.pack_start(desc, False, False, 0)
+        if a.get("news"):
+            note = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6); note.get_style_context().add_class("store-note")
+            note.pack_start(label("What's new" + (f" in {a['version']}" if a.get("version") else ""), "store-name"), False, False, 0)
+            note.pack_start(label(a["news"], wrap=True, sel=True), False, False, 0); page.pack_start(note, False, False, 0)
+
+        rows = []
+        if a.get("dev"): rows.append(("Developer", a["dev"], None))
         lic = a.get("license", "")
-        if lic: facts.append(("License", "Proprietary" if "proprietary" in lic.lower() else lic.replace("LicenseRef-", "")))
-        if a.get("home"): facts.append(("Website", a["home"]))
-        facts.append(("Installs from", "Flathub (just for you; no password needed)"))
+        if lic: rows.append(("License", "Proprietary" if "proprietary" in lic.lower() else lic.replace("LicenseRef-", ""), None))
+        for kind, title in (("homepage", "Website"), ("help", "Help"), ("vcs-browser", "Source code"), ("bugtracker", "Report a problem"), ("donation", "Donate")):
+            if a.get("urls", {}).get(kind): rows.append((title, a["urls"][kind], a["urls"][kind]))
+        if a.get("apt"): rows.append(("Installs from", "Ubuntu's software library (asks for your password)", None))
+        elif a.get("appimage"): rows.append(("File", a["appimage"], None))
+        else:
+            rows.append(("Installs from", "Flathub (just for you; no password needed)", None)); rows.append(("App ID", a["id"], None))
         grid = Gtk.Grid(column_spacing=16, row_spacing=6)
-        for i, (k, v) in enumerate(facts):
-            grid.attach(label(k, "summit-subtle"), 0, i, 1, 1); grid.attach(label(v, wrap=True, sel=True), 1, i, 1, 1)
-        page.pack_start(grid, False, False, 0)
-        self.detail_sc.add(page); page.show_all(); self.stack.set_visible_child_name("detail")
-        self.detail_sc.get_vadjustment().set_value(0)
+        def add_row(k, v, url):
+            i = len(grid.get_children()) // 2
+            grid.attach(label(k, "summit-subtle"), 0, i, 1, 1)
+            if url:
+                b = Gtk.Button(label=re.sub(r"^https?://(www\.)?", "", v).rstrip("/")[:60], halign=Gtk.Align.START); b.get_style_context().add_class("store-link")
+                b.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(url, None)); grid.attach(b, 1, i, 1, 1)
+            else: grid.attach(label(v, wrap=True, sel=True), 1, i, 1, 1)
+        for r in rows: add_row(*r)
+        self.heading(page, "Information"); page.pack_start(grid, False, False, 0)
+
+        similar = [x for x in self.rank([x for x in self.apps if x is not a and set(x["cats"]) & set(a.get("cats", [])[:2])])][:6] if a.get("cats") else []
+        if similar:
+            self.heading(page, "More like this"); self.grid(page, similar, paged=False)
+
+        self.switch("detail", page, "back" if back else "forward")
         if a["id"] in self.jobs: self.progress.show(); self.progress.set_text(self.jobs[a["id"]]); self.progress.pulse()
+
+        # details that take a moment to look up
+        def lookup():
+            if a.get("apt"):
+                d = apt_details(a["apt"]) if not FAKE else {"desc": "A sample package from Ubuntu's library.", "version": "1.0", "home": "", "size": "2.1 MB"}
+                GLib.idle_add(filled, d.get("version"), d.get("size"), d)
+            elif not a.get("appimage") and not self.sizes.get(a["id"]):
+                dl, inst = download_size(a["id"]); GLib.idle_add(filled, None, f"{dl} download" if dl else (inst or "—"), None)
+        def filled(version, size, d):
+            if self.current is not a: return False
+            if version and "Version" in values: values["Version"].set_text(version)
+            if size and "Size" in values: values["Size"].set_text(size)
+            elif "Size" in values and values["Size"].get_text() == "…": values["Size"].set_text("—")
+            if d and d.get("desc") and not a.get("desc"): desc.set_text(d["desc"])
+            if d and d.get("home"): add_row("Website", d["home"], d["home"]); grid.show_all()
+            return False
+        threading.Thread(target=lookup, daemon=True).start()
+
+    def gallery(self, a):
+        shots = a["shots"]; W, H = 720, 400
+        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8); wrap.get_style_context().add_class("store-shots")
+        st = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=260); st.set_size_request(-1, H)
+        loaded = set(); dots = Gtk.Box(halign=Gtk.Align.CENTER); dot_btns = []
+        for i in range(len(shots)):
+            sp = Gtk.Spinner(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER); sp.set_size_request(28, 28); sp.start()
+            holder = Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER); holder.add(sp); st.add_named(holder, str(i))
+            d = Gtk.Button(); d.get_style_context().add_class("store-dot"); d.connect("clicked", lambda _b, i=i: show(i)); dots.pack_start(d, False, False, 0); dot_btns.append(d)
+        def show(i):
+            i %= len(shots); st.set_visible_child_name(str(i))
+            for n, d in enumerate(dot_btns): (d.get_style_context().add_class if n == i else d.get_style_context().remove_class)("on")
+            for n in (i, i + 1):                                   # this picture, and the next one ready in advance
+                n %= len(shots)
+                if n in loaded: continue
+                loaded.add(n)
+                def got(pb, n=n):
+                    holder = st.get_child_by_name(str(n))
+                    if holder is None or self.current is not a: return False
+                    for c in holder.get_children(): holder.remove(c)
+                    w = Gtk.Image.new_from_pixbuf(pb) if pb else label("This picture couldn't be loaded.", "summit-subtle")
+                    holder.add(w); w.show(); return False
+                load_picture(shots[n], W, H, got)
+        cur = lambda: int(st.get_visible_child_name() or 0)
+        ov = Gtk.Overlay(); ov.add(st)
+        if len(shots) > 1:
+            for icon, align, step in (("go-previous-symbolic", Gtk.Align.START, -1), ("go-next-symbolic", Gtk.Align.END, 1)):
+                b = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON); b.get_style_context().add_class("store-nav")
+                b.set_halign(align); b.set_valign(Gtk.Align.CENTER); b.connect("clicked", lambda _b, s=step: show(cur() + s)); ov.add_overlay(b)
+        wrap.pack_start(ov, False, False, 0)
+        if len(shots) > 1: wrap.pack_start(dots, False, False, 0)
+        GLib.idle_add(lambda: show(0) and False)
+        return wrap
 
     def fill_actions(self, a):
         box = self.detail_actions
@@ -495,21 +970,19 @@ class Store(Gtk.ApplicationWindow):
         box.pack_start(self.action_button(a), False, False, 0)
         if a["id"] in self.installed and a["id"] not in self.jobs:
             r = Gtk.Button(label="Uninstall"); r.get_style_context().add_class("destructive-action")
-            r.connect("clicked", lambda *_: self.uninstall(a["id"])); box.pack_start(r, False, False, 0)
+            r.connect("clicked", lambda *_: self.uninstall(a)); box.pack_start(r, False, False, 0)
         box.show_all()
 
     # ---- jobs
     def refresh_views(self, aid):
-        if self.stack.get_visible_child_name() == "detail" and getattr(self, "current", None) and self.current["id"] == aid:
-            self.fill_actions(self.current)
-        elif self.stack.get_visible_child_name() == "list":
-            y = self.list_sc.get_vadjustment().get_value(); self.show_list()
-            GLib.idle_add(lambda: self.list_sc.get_vadjustment().set_value(y))
+        if self.on_detail() and self.current and self.current["id"] == aid: self.fill_actions(self.current)
+        elif not self.on_detail() and self.stack.get_visible_child_name() != "message": self.show_list(keep_scroll=True)
 
-    def job(self, aid, args, verb, done_msg):
+    def job(self, a, cmd, verb, done_msg, fake=None, after=None):
+        aid = a["id"]
         if aid in self.jobs: return
         self.jobs[aid] = verb + "…"; self.refresh_views(aid)
-        on_detail = lambda: self.stack.get_visible_child_name() == "detail" and self.current["id"] == aid
+        on_detail = lambda: self.on_detail() and self.current is not None and self.current["id"] == aid
         if on_detail(): self.progress.show(); self.progress.set_text(verb + "…")
         frac = {"v": None}
         def tick():
@@ -524,57 +997,149 @@ class Store(Gtk.ApplicationWindow):
             short = (verb + f"… {m.group(1)}%") if m else (verb + "…")
             if m: frac["v"] = min(1.0, int(m.group(1)) / 100)
             self.jobs[aid] = short
-            GLib.idle_add(lambda: on_detail() and self.progress.set_text(short))
+            GLib.idle_add(lambda: on_detail() and self.progress.set_text(short) and False)
         def work():
-            ok, last = run_job(args, line)
-            GLib.idle_add(finish, ok, last)
-        def finish(ok, last):
+            ok, last = run_job(cmd, line, fake)
+            sizes = installed_sizes()
+            GLib.idle_add(finish, ok, last, sizes)
+        def finish(ok, last, sizes):
             self.jobs.pop(aid, None)
-            self.installed = installed_ids(); self.updates.discard(aid) if ok else None
-            self.update_badge()
+            if ok and after: after()
+            self.set_installed(sizes); self.updates.discard(aid) if ok else None; self.updates &= self.installed
+            save_state(self.state); self.update_badge()
             if on_detail(): self.progress.hide()
-            name = self.by_id.get(aid, {}).get("name", aid)
-            if ok: notify(done_msg.format(name=name))
-            else:
+            if ok: notify(done_msg.format(name=a["name"]))
+            elif last != "cancelled":
                 d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.OK,
-                                      text=f"{name} couldn't be {verb.lower().replace('ing', 'ed')}")
+                                      text=f"{a['name']} couldn't be {verb.lower().replace('ing', 'ed')}")
                 d.format_secondary_text((last or "Check your internet connection and try again.")[:300]); d.run(); d.destroy()
             self.refresh_views(aid)
             return False
         threading.Thread(target=work, daemon=True).start()
 
-    def install(self, aid):
-        if aid in self.installed and aid in self.updates:
-            self.job(aid, ["update", "--user", "-y", "--noninteractive", aid], "Updating", "{name} is up to date")
+    def install(self, a):
+        aid = a["id"]
+        if a.get("apt"):
+            pkg = a["apt"]
+            self.job(a, ["pkexec", HELPER, "apt-install", pkg], "Installing", "{name} is installed. Find it in Launchpad or Spotlight.",
+                     after=lambda: self.state["apt"].__setitem__(pkg, a["name"]))
+        elif aid in self.installed and aid in self.updates:
+            self.job(a, ["flatpak", "update", "--user", "-y", "--noninteractive", aid], "Updating", "{name} is up to date")
         else:
-            self.job(aid, ["install", "--user", "-y", "--noninteractive", REMOTE, aid], "Installing",
-                     "{name} is installed. Find it in Launchpad or Spotlight.")
+            self.job(a, ["flatpak", "install", "--user", "-y", "--noninteractive", REMOTE, aid], "Installing",
+                     "{name} is installed. Find it in Launchpad or Spotlight.", fake=lambda: _fake_installed.__setitem__(aid, 250_000_000))
 
-    def uninstall(self, aid):
-        name = self.by_id.get(aid, {}).get("name", aid)
+    def uninstall(self, a):
+        aid = a["id"]
         d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.NONE,
-                              text=f"Uninstall {name}?")
-        d.format_secondary_text("Its settings stay on this Mac, so you can install it again later.")
+                              text=f"Uninstall {a['name']}?")
+        d.format_secondary_text("The file is moved to the Trash." if a.get("appimage") else "Its settings stay on this Mac, so you can install it again later.")
         d.add_button("Cancel", Gtk.ResponseType.CANCEL); b = d.add_button("Uninstall", Gtk.ResponseType.OK)
         b.get_style_context().add_class("destructive-action")
         r = d.run(); d.destroy()
         if r != Gtk.ResponseType.OK: return
+        if a.get("appimage"):
+            name = aid.split(":", 1)[1]
+            try: Gio.File.new_for_path(a["appimage"]).trash(None)
+            except GLib.Error:
+                try: os.remove(a["appimage"])
+                except OSError: pass
+            try: os.remove(os.path.join(HOME, ".local/share/applications", f"summit-appimage-{slug(name)}.desktop"))
+            except OSError: pass
+            self.state["appimages"].pop(name, None); save_state(self.state); self.set_installed(self.sizes if not FAKE else installed_sizes())
+            notify(f"{name} was uninstalled"); self.show_list(back=True); return
+        if a.get("apt"):
+            pkg = a["apt"]
+            self.job(a, ["pkexec", HELPER, "apt-remove", pkg], "Removing", "{name} was uninstalled", after=lambda: self.state["apt"].pop(pkg, None)); return
         # --delete-data is not used: settings are kept. Unused shared parts are removed afterwards to free space.
-        self.job(aid, ["uninstall", "--user", "-y", "--noninteractive", aid], "Removing", "{name} was uninstalled")
+        self.job(a, ["flatpak", "uninstall", "--user", "-y", "--noninteractive", aid], "Removing", "{name} was uninstalled", fake=lambda: _fake_installed.pop(aid, None))
         threading.Thread(target=lambda: (time.sleep(2), flatpak("uninstall", "--user", "--unused", "-y", "--noninteractive")) if not FAKE else None,
                          daemon=True).start()
 
     def update_all(self, btn):
         btn.set_sensitive(False); btn.set_label("Updating…")
         def work():
-            ok, last = run_job(["update", "--user", "-y", "--noninteractive"], lambda l: None)
-            GLib.idle_add(done, ok)
-        def done(ok):
-            self.updates = update_ids() & self.installed if not FAKE else set()
+            ok, last = run_job(["flatpak", "update", "--user", "-y", "--noninteractive"], lambda l: None)
+            ups = update_ids() if not FAKE else set(); sizes = installed_sizes()
+            GLib.idle_add(done, ok, ups, sizes)
+        def done(ok, ups, sizes):
+            self.set_installed(sizes); self.updates = ups & self.installed
             self.update_badge(); notify("Your apps are up to date" if ok else "Some apps couldn't be updated")
-            if self.section == "updates": self.show_list()
+            if self.section == "updates" and not self.on_detail(): self.show_list(animate=False)
             return False
         threading.Thread(target=work, daemon=True).start()
+
+    def free_space(self):
+        """Remove shared runtimes no installed app needs, and old downloaded pictures."""
+        def work():
+            before = shutil.disk_usage(HOME).free
+            if not FAKE: flatpak("uninstall", "--user", "--unused", "-y", "--noninteractive")
+            shutil.rmtree(os.path.join(CACHE, "shots"), ignore_errors=True)
+            freed = max(0, shutil.disk_usage(HOME).free - before)
+            GLib.idle_add(lambda: notify(f"Freed {human(freed)}" if freed > 5_000_000 else "Nothing to clean up: everything installed is in use") and False)
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---- apps from a file
+    def pick_file(self):
+        d = Gtk.FileChooserNative.new("Install from a File", self, Gtk.FileChooserAction.OPEN, "Install", "Cancel")
+        f = Gtk.FileFilter(); f.set_name("Apps (.deb, .flatpak, .flatpakref, .AppImage)")
+        for ext in FILE_KINDS: f.add_pattern("*" + ext); f.add_pattern("*" + ext.upper()); f.add_pattern("*.AppImage")
+        d.add_filter(f)
+        dl = os.path.join(HOME, "Downloads")
+        if os.path.isdir(dl): d.set_current_folder(dl)
+        if d.run() == Gtk.ResponseType.ACCEPT and d.get_filename(): self.install_file(d.get_filename())
+        d.destroy()
+
+    def install_file(self, path):
+        path = os.path.abspath(path); kind = FILE_KINDS.get(os.path.splitext(path)[1].lower()); base = os.path.basename(path)
+        if not kind or not os.path.isfile(path):
+            d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO, buttons=Gtk.ButtonsType.OK, text=f"The App Store can't install “{base}”")
+            d.format_secondary_text("It installs .deb, .flatpak, .flatpakref and .AppImage files. Windows programs (.exe) open with Bottles; Mac apps (.dmg) don't run on Summit.")
+            d.run(); d.destroy(); return
+        what = {"deb": ("an Ubuntu/Debian package", "It installs for everyone on this Mac and can change the system, so you'll be asked for your password. "
+                        "Only install packages from a source you trust."),
+                "flatpak": ("a Flatpak app", "It installs just for you, in its own sandbox."),
+                "appimage": ("an AppImage", "It's a single file that runs as it is. It will be kept in your Applications folder and added to Launchpad. "
+                             "It isn't sandboxed, so only use files from a source you trust.")}[kind]
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.NONE, text=f"Install “{base}”?")
+        d.format_secondary_text(f"This is {what[0]}. {what[1]}")
+        d.add_button("Cancel", Gtk.ResponseType.CANCEL); d.add_button("Install", Gtk.ResponseType.OK).get_style_context().add_class("suggested-action")
+        r = d.run(); d.destroy()
+        if r != Gtk.ResponseType.OK: return
+        name = re.sub(r"[-_.]?(x86_64|amd64|x64|linux|v?\d+(\.\d+)+).*$", "", os.path.splitext(base)[0], flags=re.I).replace("_", " ").replace("-", " ").strip() or base
+        fake_app = dict(apt_app(name), id="file:" + base, apt=None, name=name)
+        if kind == "appimage":
+            try:
+                os.makedirs(APPIMAGES, exist_ok=True); dest = os.path.join(APPIMAGES, base)
+                if os.path.abspath(dest) != path: shutil.copy2(path, dest)
+                os.chmod(dest, 0o755)
+                apps_dir = os.path.join(HOME, ".local/share/applications"); os.makedirs(apps_dir, exist_ok=True)
+                with open(os.path.join(apps_dir, f"summit-appimage-{slug(name)}.desktop"), "w") as f:
+                    f.write(f"[Desktop Entry]\nType=Application\nName={name}\nExec=\"{dest}\" %U\nIcon=application-x-executable\nTerminal=false\nCategories=Utility;\n")
+                self.state["appimages"][name] = dest; save_state(self.state); self.set_installed(self.sizes)
+                notify(f"{name} is installed. Find it in Launchpad or Spotlight.")
+                if not self.on_detail(): self.show_list(animate=False)
+            except OSError as e:
+                d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.OK, text=f"{base} couldn't be installed")
+                d.format_secondary_text(str(e)[:300]); d.run(); d.destroy()
+        elif kind == "flatpak":
+            self.job(fake_app, ["flatpak", "install", "--user", "-y", "--noninteractive", path], "Installing", "{name} is installed. Find it in Launchpad or Spotlight.")
+        else:
+            def after():
+                pkg = subprocess.run(["dpkg-deb", "-f", path, "Package"], capture_output=True, text=True).stdout.strip()
+                if pkg: self.state["apt"][pkg] = name
+            self.job(fake_app, ["pkexec", HELPER, "install-deb", path], "Installing", "{name} is installed. Find it in Launchpad or Spotlight.", after=after)
+
+def slug(name): return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "app"
+
+def auto_updates_on():
+    if FAKE: return os.path.exists(os.path.join(CACHE, "fake-auto"))
+    return subprocess.run(["systemctl", "--user", "is-enabled", "--quiet", "summit-app-updates.timer"]).returncode == 0
+
+def set_auto_updates(on):
+    if FAKE:
+        p = os.path.join(CACHE, "fake-auto"); open(p, "w").close() if on else (os.path.exists(p) and os.remove(p)); return
+    subprocess.run(["systemctl", "--user", "enable" if on else "disable", "--now", "summit-app-updates.timer"], capture_output=True)
 
 def notify(text):
     try: subprocess.Popen(["notify-send", "-a", "App Store", "-i", "summit-appstore", text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -583,14 +1148,21 @@ def notify(text):
 class App(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="org.summitos.AppStore", flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
-        self.win = None; self.pending_show = None; self.pending_updates = False
+        self.win = None; self.pending_show = None; self.pending_updates = False; self.pending_file = None
     def do_command_line(self, cl):
         args = cl.get_arguments()[1:]
-        if "--show" in args and args.index("--show") + 1 < len(args): self.pending_show = args[args.index("--show") + 1]
+        self.pending_show = args[args.index("--show") + 1] if "--show" in args and args.index("--show") + 1 < len(args) else None
         self.pending_updates = "--updates" in args
+        files = [a for a in args if not a.startswith("--") and a != self.pending_show]
+        self.pending_file = None
+        if files:
+            f = files[0]
+            if f.startswith("file://"): f = Gio.File.new_for_uri(f).get_path() or f
+            self.pending_file = f if os.path.isabs(f) else os.path.join(cl.get_cwd() or os.getcwd(), f)
         if self.win is None: self.win = Store(self)
-        else:
-            if self.pending_show and self.pending_show in self.win.by_id: self.win.show_detail(self.win.by_id[self.pending_show])
+        elif self.win.apps:
+            if self.pending_file: f = self.pending_file; self.pending_file = None; self.win.present(); self.win.install_file(f)
+            elif self.pending_show and self.pending_show in self.win.by_id: self.win.show_detail(self.win.by_id[self.pending_show])
         self.win.present()
         return 0
 

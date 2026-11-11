@@ -1,18 +1,21 @@
 {
-  "version": "1.26.0",
-  "build": 12600,
+  "version": "1.27.0",
+  "build": 12700,
   "restart": "session",
   "notes": [
-    "Momentum scrolling for the Magic Mouse: flick and lift, and the page keeps gliding and slows to a stop like on macOS; touch the mouse to stop it, flick again to go faster",
-    "New Settings → Mouse & Trackpad page: Natural scrolling, Momentum scrolling, Swipe gestures and the green full-screen button, each with its own switch",
-    "New transitions: Control Center drops down from the menu bar, notifications slide in from the right, Spotlight pops in place, and the full-screen bar slides down"
+    "App Store redesign: a colourful Discover page with a rotating banner, category tiles, Popular, Recently updated and a Games and classic consoles row; each category has its own colour",
+    "Richer app pages: a screenshot gallery, version, last update, download size, licence, What's New, links, and More like this, tinted in the app's own colour",
+    "Sort by Popular, Name or Recently Updated, and filter to verified or open-source apps",
+    "More places to get apps: search also finds apps in Ubuntu's software library (asks for your password), and the App Store installs .deb, .flatpak and .AppImage files, by double-click or Options → Install from a File",
+    "Options menu: update apps automatically once a day, Free Up Space, and Installed now shows how much room each app takes"
   ],
   "apt": {
     "install": [
       "flatpak",
       "xdg-desktop-portal",
       "xdg-desktop-portal-gtk",
-      "xinput"
+      "xinput",
+      "libfuse2t64"
     ],
     "remove": []
   }

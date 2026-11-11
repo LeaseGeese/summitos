@@ -2,11 +2,12 @@
 Type=Application
 Name=App Store
 GenericName=Software
-Comment=Find and install apps: Chrome, Spotify, Discord, Zoom, VS Code, Steam and thousands more
-Exec=summit-appstore
+Comment=Find and install apps: Chrome, Spotify, Discord, Zoom, VS Code, Steam and thousands more. Also installs .deb, .flatpak and .AppImage files
+Exec=summit-appstore %f
 Icon=summit-appstore
 Terminal=false
 Categories=System;PackageManager;
-Keywords=apps;install;software;store;download;flatpak;flathub;windows;exe;bottles;
+Keywords=apps;install;software;store;download;flatpak;flathub;windows;exe;bottles;deb;appimage;ubuntu;apt;package;games;emulator;
+MimeType=application/vnd.debian.binary-package;application/x-deb;application/vnd.flatpak.ref;application/vnd.flatpak;application/vnd.appimage;application/x-iso9660-appimage;
 StartupNotify=true
 StartupWMClass=summit-appstore

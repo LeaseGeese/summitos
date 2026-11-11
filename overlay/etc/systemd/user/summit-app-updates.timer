@@ -1,0 +1,10 @@
+[Unit]
+Description=Update App Store apps once a day (switch: App Store → Options)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

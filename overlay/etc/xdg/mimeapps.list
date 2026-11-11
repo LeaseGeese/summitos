@@ -1,0 +1,7 @@
+[Default Applications]
+application/vnd.debian.binary-package=summit-appstore.desktop
+application/x-deb=summit-appstore.desktop
+application/vnd.flatpak.ref=summit-appstore.desktop
+application/vnd.flatpak=summit-appstore.desktop
+application/vnd.appimage=summit-appstore.desktop
+application/x-iso9660-appimage=summit-appstore.desktop

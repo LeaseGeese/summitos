@@ -1,0 +1,48 @@
+#!/bin/bash
+# appstore-helper: the few App Store steps that need administrator rights. The App Store runs it through
+# pkexec (you are asked for your password); it accepts only these three requests and checks what it is given.
+#   appstore-helper apt-install PACKAGE     install an app from Ubuntu's software library
+#   appstore-helper apt-remove PACKAGE      remove one again (refused if that would take system parts with it)
+#   appstore-helper install-deb FILE.deb    install a downloaded package, with whatever it needs
+# Progress is printed as lines like "42%".
+set -u
+export DEBIAN_FRONTEND=noninteractive PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+APT=(apt-get -o DPkg::Lock::Timeout=180 -o APT::Status-Fd=1 -y)
+valid_pkg() { [[ "$1" =~ ^[a-z0-9][a-z0-9+.-]{1,62}$ ]]; }
+progress() {      # apt's status lines ("pmstatus:pkg:42.5:text") -> "42%"; everything else passes through
+  while IFS= read -r line; do
+    case "$line" in
+      pmstatus:*|dlstatus:*) p=${line#*:}; p=${p#*:}; p=${p%%:*}; echo "${p%%.*}%" ;;
+      *) echo "$line" ;;
+    esac
+  done
+}
+run_apt() {       # once; if the package lists were out of date, refresh them and try once more
+  "${APT[@]}" "$@" 2>&1 | progress; rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 0 ] && [ "$1" = install ]; then
+    apt-get -o DPkg::Lock::Timeout=180 update -q >/dev/null 2>&1
+    "${APT[@]}" "$@" 2>&1 | progress; rc=${PIPESTATUS[0]}
+  fi
+  return "$rc"
+}
+case "${1:-}" in
+  apt-install)
+    valid_pkg "${2:-}" || { echo "Not a package name."; exit 64; }
+    run_apt install "$2" ;;
+  apt-remove)
+    valid_pkg "${2:-}" || { echo "Not a package name."; exit 64; }
+    # never let removing an app take the desktop, the login screen, the network or the kernel with it
+    gone=$(apt-get -s remove "$2" 2>/dev/null | awk '/^Remv /{print $2}')
+    if echo "$gone" | grep -Eq '^(xfce4-session|xfwm4|xfce4-panel|xfdesktop4|lightdm|xorg|xserver-xorg.*|network-manager|systemd.*|linux-image.*|plank|flatpak|sudo|policykit-1|polkitd|ubuntu-minimal|apt|dpkg|grub.*)$'; then
+      echo "Removing this would also remove parts of Summit OS, so it was left installed."; exit 65
+    fi
+    run_apt remove "$2" ;;
+  install-deb)
+    f=$(readlink -f -- "${2:-}" 2>/dev/null) || exit 64
+    case "$f" in *.deb|*.DEB) ;; *) echo "Not a .deb file."; exit 64 ;; esac
+    [ -f "$f" ] && dpkg-deb -f "$f" Package >/dev/null 2>&1 || { echo "This file is not a valid package."; exit 64; }
+    tmp=$(mktemp -d) && cp -- "$f" "$tmp/app.deb" && chmod 755 "$tmp" && chmod 644 "$tmp/app.deb" || exit 1   # a copy apt's own user can read
+    run_apt install "$tmp/app.deb"; rc=$?
+    rm -rf "$tmp"; exit "$rc" ;;
+  *) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 64 ;;
+esac

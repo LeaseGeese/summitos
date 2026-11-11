@@ -1,0 +1,10 @@
+[Unit]
+Description=Update App Store apps (Flathub)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flatpak update --user -y --noninteractive
+# quietly: lowest priority for the processor and the disk
+Nice=15
+IOSchedulingClass=idle
