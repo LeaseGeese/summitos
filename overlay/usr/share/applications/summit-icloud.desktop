@@ -1,0 +1,25 @@
+[Desktop Entry]
+Type=Application
+Name=iCloud
+GenericName=Apple Account apps
+Comment=Mail, Photos, iCloud Drive, Notes, Reminders, Calendar, Find My, Pages, Numbers, Keynote, Apple Music and Apple TV
+Exec=summit-icloud
+Icon=summit-icloud
+Terminal=false
+Categories=Network;Office;
+Keywords=apple;icloud;mail;photos;notes;reminders;calendar;contacts;find my;iphone;pages;numbers;keynote;music;tv;account;
+StartupNotify=true
+StartupWMClass=summit-icloud
+Actions=mail;photos;drive;notes;
+[Desktop Action mail]
+Name=Mail
+Exec=summit-icloud mail
+[Desktop Action photos]
+Name=Photos
+Exec=summit-icloud photos
+[Desktop Action drive]
+Name=iCloud Drive
+Exec=summit-icloud drive
+[Desktop Action notes]
+Name=Notes
+Exec=summit-icloud notes

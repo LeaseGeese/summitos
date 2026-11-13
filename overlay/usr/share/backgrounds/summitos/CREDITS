@@ -1,0 +1,15 @@
+Summit OS wallpapers: photographs and where they come from
+
+Summit      "Mountain" by Andy Betts, from KDE Plasma (plasma-workspace-wallpapers), CC BY-SA 4.0
+Dolomites   "Canazei Granite Ridges", from the elementary OS wallpapers collection (Unsplash)
+Yosemite    "Photo of Valley" and "Snow-Capped Mountain", from the elementary OS wallpapers collection (Unsplash)
+Alpine Lake "A Large Body of Water Surrounded By Mountains", from the elementary OS wallpapers collection (Unsplash)
+Highlands   Sean Afnan (Unsplash), from the Pop!_OS wallpapers collection
+Desert      Jasper van der Meij and Jad Limcaco (Unsplash), from the Pop!_OS wallpapers collection
+Dunes       "A Trail of Footprints In The Sand" (elementary OS collection) and Jared Evans (Unsplash, Pop!_OS collection)
+Coast       "Odin" and "Odin (dark)", from the elementary OS wallpapers collection
+
+Collections: https://github.com/elementary/wallpapers  https://github.com/pop-os/wallpapers
+             https://invent.kde.org/plasma/plasma-workspace-wallpapers
+The pictures are cropped to 16:9. Where no night photograph of the same place exists (Dolomites, Alpine Lake,
+Highlands) the dark picture is the day photograph graded to moonlight by Summit OS.

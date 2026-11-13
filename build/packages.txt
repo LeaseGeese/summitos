@@ -248,3 +248,8 @@ zstd
 flatpak
 xdg-desktop-portal
 xdg-desktop-portal-gtk
+gir1.2-webkit2-4.1
+qrencode
+usbmuxd
+libimobiledevice-utils
+ifuse

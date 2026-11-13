@@ -7,7 +7,7 @@ the `summit-appearance` command does the work instead.
 import datetime, json, os, subprocess
 
 STATE = os.path.join(os.path.expanduser("~"), ".config", "summit", "appearance.json")
-DEFAULTS = {"accent": "blue", "mode": "light", "wallpaper": "spectrum", "glass": "on",
+DEFAULTS = {"accent": "blue", "mode": "light", "wallpaper": "summit", "glass": "on",
             "dock_size": 52, "dock_zoom": True, "dock_autohide": False, "text": "default"}
 
 def get():

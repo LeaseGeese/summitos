@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Summit Drop
+GenericName=File transfer
+Comment=Send photos and files between this computer and an iPhone, iPad or Mac on the same Wi-Fi. Nothing to install on the Apple device
+Exec=summit-drop %F
+Icon=summit-drop
+Terminal=false
+Categories=Network;Utility;FileTransfer;
+Keywords=airdrop;send;share;transfer;iphone;ipad;mac;apple;photos;files;wifi;
+StartupNotify=true
+StartupWMClass=summit-drop

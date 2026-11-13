@@ -1,0 +1,183 @@
+#!/usr/bin/python3
+"""summit-icloud: your Apple account's apps on Summit, each in its own window.
+
+  summit-icloud            the iCloud window: Mail, Photos, iCloud Drive, Notes, Reminders, Calendar, Contacts,
+                           Find My, Pages, Numbers, Keynote, Apple Music and Apple TV
+  summit-icloud NAME       open one of them directly (mail, photos, drive, notes, reminders, calendar,
+                           contacts, find, pages, numbers, keynote, music, tv)
+
+These are Apple's own web apps (icloud.com), so you sign in on Apple's page with your Apple Account and
+two-factor code; Summit never sees your password. You stay signed in between restarts, and all the
+iCloud apps share that one sign-in.
+
+Each app opens as a window of Chrome (or Chromium, Brave, Edge) when one is installed, because Apple
+supports those fully and they can play Apple Music and Apple TV. Otherwise Summit's built-in web view is
+used, which works for everything except playing music and video.
+"""
+import os, shutil, subprocess, sys
+
+HOME = os.path.expanduser("~")
+APPS = [  # key, name, url, symbolic icon, tile colour
+    ("mail",      "Mail",         "https://www.icloud.com/mail",        "mail-unread-symbolic",            "#1a8cff"),
+    ("photos",    "Photos",       "https://www.icloud.com/photos",      "image-x-generic-symbolic",        "#ff9f0a"),
+    ("drive",     "iCloud Drive", "https://www.icloud.com/iclouddrive", "folder-symbolic",                 "#32ade6"),
+    ("notes",     "Notes",        "https://www.icloud.com/notes",       "accessories-text-editor-symbolic", "#e6b800"),
+    ("reminders", "Reminders",    "https://www.icloud.com/reminders",   "view-list-symbolic",              "#5e5ce6"),
+    ("calendar",  "Calendar",     "https://www.icloud.com/calendar",    "x-office-calendar-symbolic",      "#ff453a"),
+    ("contacts",  "Contacts",     "https://www.icloud.com/contacts",    "system-users-symbolic",           "#8e8e93"),
+    ("find",      "Find My",      "https://www.icloud.com/find",        "find-location-symbolic",          "#30d158"),
+    ("pages",     "Pages",        "https://www.icloud.com/pages",       "x-office-document-symbolic",      "#ff9500"),
+    ("numbers",   "Numbers",      "https://www.icloud.com/numbers",     "x-office-spreadsheet-symbolic",   "#28cd41"),
+    ("keynote",   "Keynote",      "https://www.icloud.com/keynote",     "x-office-presentation-symbolic",  "#0a84ff"),
+    ("music",     "Apple Music",  "https://music.apple.com",            "audio-x-generic-symbolic",        "#fa2d48"),
+    ("tv",        "Apple TV",     "https://tv.apple.com",               "video-x-generic-symbolic",        "#1c1c1e"),
+]
+BYKEY = {a[0]: a for a in APPS}
+BROWSERS = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "brave-browser", "microsoft-edge", "microsoft-edge-stable"]
+FLATPAKS = ["com.google.Chrome", "org.chromium.Chromium", "com.brave.Browser", "com.microsoft.Edge"]
+SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
+
+
+def chrome_command():
+    for b in BROWSERS:
+        if shutil.which(b): return [b]
+    for app in FLATPAKS:
+        if any(os.path.isdir(os.path.join(d, "app", app)) for d in (os.path.join(HOME, ".local/share/flatpak"), "/var/lib/flatpak")):
+            return ["flatpak", "run", app]
+    return None
+
+
+def open_app(key):
+    _, name, url, _, _ = BYKEY[key]
+    cmd = chrome_command()
+    if cmd and not os.path.exists(os.path.join(HOME, ".config", "summit", "icloud-builtin")):
+        subprocess.Popen(cmd + [f"--app={url}"], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "--window", key], start_new_session=True)
+
+
+# ------------------------------------------------------------------ built-in web view
+def web_window(key):
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk, Gdk, GLib
+    GLib.set_prgname("summit-icloud"); Gdk.set_program_class("Summit-icloud")
+    _, name, url, _, _ = BYKEY[key]
+    try:
+        gi.require_version("WebKit2", "4.1")
+        from gi.repository import WebKit2
+    except (ValueError, ImportError):
+        subprocess.Popen(["xdg-open", url]); return 0          # no web view on this system: use the browser
+    data = os.path.join(GLib.get_user_data_dir(), "summit", "apple-web"); cache = os.path.join(GLib.get_user_cache_dir(), "summit", "apple-web")
+    os.makedirs(data, mode=0o700, exist_ok=True); os.makedirs(cache, exist_ok=True)
+    manager = WebKit2.WebsiteDataManager(base_data_directory=data, base_cache_directory=cache)
+    ctx = WebKit2.WebContext.new_with_website_data_manager(manager)
+    cookies = ctx.get_cookie_manager()
+    cookies.set_persistent_storage(os.path.join(data, "cookies.sqlite"), WebKit2.CookiePersistentStorage.SQLITE)
+    cookies.set_accept_policy(WebKit2.CookieAcceptPolicy.NO_THIRD_PARTY)
+    view = WebKit2.WebView.new_with_context(ctx)
+    st = view.get_settings(); st.set_user_agent(SAFARI); st.set_enable_developer_extras(False)
+    st.set_javascript_can_access_clipboard(True); st.set_enable_smooth_scrolling(True)
+
+    win = Gtk.Window(title=name); win.set_default_size(1180, 780); win.set_icon_name("summit-icloud")
+    win.add(view)
+    view.connect("notify::title", lambda *_: win.set_title(view.get_title() or name))
+
+    def new_window(_v, action):               # links that want a new window: Apple pages here, anything else in the browser
+        uri = action.get_request().get_uri() or ""
+        host = uri.split("/")[2] if uri.count("/") >= 2 else ""
+        if host.endswith(("icloud.com", "apple.com")): view.load_uri(uri)
+        else: subprocess.Popen(["xdg-open", uri])
+        return None
+    view.connect("create", new_window)
+
+    def download(_ctx, dl):
+        def dest(d, suggested):
+            folder = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or os.path.join(HOME, "Downloads")
+            os.makedirs(folder, exist_ok=True)
+            base, ext = os.path.splitext(os.path.basename(suggested) or "download"); path = os.path.join(folder, base + ext); n = 2
+            while os.path.exists(path): path = os.path.join(folder, f"{base} {n}{ext}"); n += 1
+            d.set_destination("file://" + path); return True
+        dl.connect("decide-destination", dest)
+        dl.connect("finished", lambda d: subprocess.Popen(["notify-send", "-a", name, "-i", "summit-icloud", "Download finished",
+                                                           os.path.basename(d.get_destination() or "")]))
+    ctx.connect("download-started", download)
+
+    def failed(_v, _event, uri, error):
+        view.load_alternate_html(
+            "<body style='font:17px Inter,sans-serif;display:flex;height:90vh;align-items:center;justify-content:center;text-align:center;color:#6e6e73'>"
+            f"<div><h2 style='color:#1d1d1f'>Can't reach {name}</h2><p>Check that this computer is connected to the internet, then press ⌘R (or Ctrl+R).</p></div></body>", uri, None)
+        return True
+    view.connect("load-failed", failed)
+
+    def key(_w, e):
+        from gi.repository import Gdk
+        mod = e.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.MOD4_MASK)
+        if mod and e.keyval in (Gdk.KEY_r, Gdk.KEY_R): view.reload(); return True
+        if mod and e.keyval in (Gdk.KEY_w, Gdk.KEY_W): win.close(); return True
+        if mod and e.keyval == Gdk.KEY_bracketleft and view.can_go_back(): view.go_back(); return True
+        if mod and e.keyval == Gdk.KEY_bracketright and view.can_go_forward(): view.go_forward(); return True
+        return False
+    win.connect("key-press-event", key)
+    win.connect("destroy", Gtk.main_quit)
+    view.load_uri(url); win.show_all(); Gtk.main()
+    return 0
+
+
+# ------------------------------------------------------------------ the iCloud window
+def hub():
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk, Gdk, Gio, GLib
+    GLib.set_prgname("summit-icloud"); Gdk.set_program_class("Summit-icloud")
+
+    class App(Gtk.Application):
+        def __init__(self):
+            super().__init__(application_id="org.summitos.iCloud", flags=Gio.ApplicationFlags.FLAGS_NONE)
+            self.win = None
+        def do_activate(self):
+            if self.win: self.win.present(); return
+            css = Gtk.CssProvider(); css.load_from_data(b"""
+              .ic-title { font-size: 20pt; font-weight: 700; } .ic-sub { opacity: 0.65; }
+              button.ic-tile { border-radius: 16px; padding: 12px 6px; border: none; box-shadow: none; background-image: none; background-color: transparent; }
+              button.ic-tile:hover { background-color: alpha(currentColor, 0.07); }
+              .ic-badge { border-radius: 15px; min-width: 60px; min-height: 60px; color: #ffffff; box-shadow: inset 0 1px rgba(255,255,255,0.28), 0 1px 3px rgba(0,0,0,0.22); }
+            """)
+            Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            w = self.win = Gtk.ApplicationWindow(application=self, title="iCloud"); w.set_default_size(720, 520)
+            w.set_icon_name("summit-icloud")
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=26); w.add(box)
+            t = Gtk.Label(label="iCloud", xalign=0); t.get_style_context().add_class("ic-title"); box.pack_start(t, False, False, 0)
+            s = Gtk.Label(xalign=0, wrap=True, label="Your Apple Account's mail, photos, files and documents. The first app you open asks you to sign in on "
+                          "Apple's page; after that they all stay signed in."); s.get_style_context().add_class("ic-sub"); box.pack_start(s, False, False, 0)
+            flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=5, min_children_per_line=4, homogeneous=True,
+                               column_spacing=6, row_spacing=6, valign=Gtk.Align.START); flow.set_margin_top(14)
+            for key, name, _url, icon, colour in APPS:
+                b = Gtk.Button(); b.get_style_context().add_class("ic-tile"); b.set_tooltip_text(f"Open {name}")
+                v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                badge = Gtk.Box(halign=Gtk.Align.CENTER); badge.get_style_context().add_class("ic-badge")
+                p = Gtk.CssProvider(); p.load_from_data(f".ic-badge {{ background-color: {colour}; }}".encode())
+                badge.get_style_context().add_provider(p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+                img = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.DND); img.set_pixel_size(30); img.set_halign(Gtk.Align.CENTER); img.set_hexpand(True)
+                badge.pack_start(img, True, True, 0)
+                v.pack_start(badge, False, False, 0); v.pack_start(Gtk.Label(label=name), False, False, 0)
+                b.add(v); b.connect("clicked", lambda _b, k=key: open_app(k)); flow.add(b)
+            box.pack_start(flow, True, True, 0)
+            if chrome_command():
+                note = "Apps open in windows of your Chrome-family browser."
+            else:
+                note = "To play Apple Music and Apple TV, install Google Chrome from the App Store; everything else works as it is."
+            n = Gtk.Label(label=note, xalign=0, wrap=True); n.get_style_context().add_class("ic-sub"); box.pack_end(n, False, False, 0)
+            w.show_all()
+    return App().run([])
+
+
+def main(argv):
+    if len(argv) >= 3 and argv[1] == "--window" and argv[2] in BYKEY: return web_window(argv[2])
+    if len(argv) >= 2 and argv[1] in BYKEY: open_app(argv[1]); return 0
+    if len(argv) >= 2 and argv[1] in ("-h", "--help"): print(__doc__); return 0
+    return hub()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,108 @@
+#!/usr/bin/python3
+"""summit-window-buttons: the same red / yellow / green window buttons in every app.
+
+Apps with a normal title bar get them from Summit's window manager, and apps that draw their own title
+bar get them from Summit's style files (see summit-appearance). This covers the rest, once per app:
+  - App Store (Flatpak) apps are allowed to read those style files
+  - Chrome, Chromium, Brave, Edge and Vivaldi are switched to "Use system title bar and borders"
+  - Firefox is switched to the system title bar
+Each browser is changed once, while it is not running; if you later switch it back in the browser's own
+settings, that choice is kept. Runs at login, after updates and after App Store installs.
+"""
+import glob, json, os, shutil, subprocess, sys
+
+HOME = os.path.expanduser("~")
+CFG = os.path.join(HOME, ".config", "summit")
+DONE = os.path.join(CFG, "window-buttons-done")
+FLATPAK = os.path.join(HOME, ".var", "app")
+# (profile directory, how we know the browser is installed)
+CHROMES = [
+    (".config/google-chrome", ["google-chrome", "google-chrome-stable"]),
+    (".config/chromium", ["chromium", "chromium-browser"]),
+    (".config/BraveSoftware/Brave-Browser", ["brave-browser"]),
+    (".config/microsoft-edge", ["microsoft-edge", "microsoft-edge-stable"]),
+    (".config/vivaldi", ["vivaldi", "vivaldi-stable"]),
+    (".var/app/com.google.Chrome/config/google-chrome", "com.google.Chrome"),
+    (".var/app/org.chromium.Chromium/config/chromium", "org.chromium.Chromium"),
+    (".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser", "com.brave.Browser"),
+    (".var/app/com.microsoft.Edge/config/microsoft-edge", "com.microsoft.Edge"),
+    (".var/app/com.vivaldi.Vivaldi/config/vivaldi", "com.vivaldi.Vivaldi"),
+]
+FIREFOXES = [".mozilla/firefox", ".var/app/org.mozilla.firefox/.mozilla/firefox", "snap/firefox/common/.mozilla/firefox"]
+
+def done():
+    try: return set(open(DONE).read().split("\n"))
+    except OSError: return set()
+
+def mark(key):
+    os.makedirs(CFG, exist_ok=True)
+    with open(DONE, "a") as f: f.write(key + "\n")
+
+def flatpak_installed(app_id):
+    return any(os.path.isdir(os.path.join(d, "app", app_id)) for d in
+               (os.path.join(HOME, ".local/share/flatpak"), "/var/lib/flatpak"))
+
+def flatpak_styles():
+    if not shutil.which("flatpak"): return
+    path = os.path.join(HOME, ".local/share/flatpak/overrides/global")
+    try: have = open(path).read()
+    except OSError: have = ""
+    if "xdg-config/gtk-4.0" in have and "xdg-config/gtk-3.0" in have: return
+    subprocess.run(["flatpak", "override", "--user", "--filesystem=xdg-config/gtk-3.0:ro", "--filesystem=xdg-config/gtk-4.0:ro"],
+                   capture_output=True, timeout=30)
+
+def chrome(profile, installed):
+    base = os.path.join(HOME, profile)
+    if isinstance(installed, str): present = flatpak_installed(installed)
+    else: present = any(shutil.which(b) for b in installed)
+    if not present and not os.path.isdir(base): return False
+    if os.path.lexists(os.path.join(base, "SingletonLock")): return False      # running: try again next time
+    prefs = os.path.join(base, "Default", "Preferences")
+    try:
+        with open(prefs) as f: data = json.load(f)
+    except FileNotFoundError:
+        if os.path.isdir(base) and os.listdir(base): return False               # a profile we don't understand
+        data = {}
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict): return False
+    data.setdefault("browser", {})["custom_chrome_frame"] = False
+    os.makedirs(os.path.dirname(prefs), exist_ok=True)
+    tmp = prefs + ".summit-tmp"
+    with open(tmp, "w") as f: json.dump(data, f, separators=(",", ":"))
+    os.replace(tmp, prefs)
+    return True
+
+def firefox(root):
+    changed = False
+    for prof in glob.glob(os.path.join(HOME, root, "*.default*")):
+        user = os.path.join(prof, "user.js")
+        try: have = open(user).read()
+        except OSError: have = ""
+        if "browser.tabs.inTitlebar" in have: changed = True; continue
+        with open(user, "a") as f:
+            f.write('\n// Summit OS: use the system title bar, so Firefox has the same window buttons as other apps\n'
+                    'user_pref("browser.tabs.inTitlebar", 0);\n')
+        changed = True
+    return changed
+
+def main():
+    seen = done()
+    try: flatpak_styles()
+    except Exception: pass
+    for profile, installed in CHROMES:
+        if profile in seen: continue
+        try:
+            if chrome(profile, installed): mark(profile)
+        except Exception:
+            pass
+    for root in FIREFOXES:
+        if root in seen: continue
+        try:
+            if firefox(root): mark(root)
+        except Exception:
+            pass
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

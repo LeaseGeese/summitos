@@ -17,9 +17,10 @@ STORAGE_MNT = "/mnt/imac-hd"
 ACCENT_HEX = {"blue": "#1A73E8", "purple": "#9C3FD1", "pink": "#E0306F", "orange": "#EF6C00",
               "yellow": "#F5C400", "green": "#2E9E4F", "silver": "#9AA3AE"}
 ACCENT_ORDER = ["blue", "purple", "pink", "orange", "yellow", "green", "silver"]
-NATURE_ORDER = ["peaks", "lake", "coast", "dunes", "forest", "hills"]
-NATURE_NAMES = {"peaks": "Peaks", "lake": "Alpine Lake", "coast": "Coast", "dunes": "Dunes", "forest": "Forest", "hills": "Meadow"}
-WALL_ORDER = ["accent", "spectrum"] + NATURE_ORDER + ACCENT_ORDER
+NATURE_ORDER = ["summit", "peaks", "yosemite", "lake", "highlands", "desert", "dunes", "coast"]
+NATURE_NAMES = {"summit": "Summit", "peaks": "Dolomites", "yosemite": "Yosemite", "lake": "Alpine Lake", "highlands": "Highlands",
+                "desert": "Desert", "dunes": "Dunes", "coast": "Coast"}
+WALL_ORDER = NATURE_ORDER + ["accent", "spectrum"] + ACCENT_ORDER
 
 def sh(*a, **kw):
     kw.setdefault("timeout", 30)
@@ -119,10 +120,10 @@ class AppearancePage(Gtk.Box):
             btn = Gtk.ToggleButton(relief=Gtk.ReliefStyle.NONE); btn.get_style_context().add_class("summit-pick")
             v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             if key == "auto":
-                pic = Gtk.Box(); pic.pack_start(rounded_thumb(f"{WALLS}/thumbs/summit-spectrum-light.png", 70, 88, 10), False, False, 0)
-                pic.pack_start(rounded_thumb(f"{WALLS}/thumbs/summit-spectrum-dark.png", 70, 88, 10), False, False, 0)
+                pic = Gtk.Box(); pic.pack_start(rounded_thumb(f"{WALLS}/thumbs/summit-summit-light.png", 70, 88, 10), False, False, 0)
+                pic.pack_start(rounded_thumb(f"{WALLS}/thumbs/summit-summit-dark.png", 70, 88, 10), False, False, 0)
             else:
-                pic = rounded_thumb(f"{WALLS}/thumbs/summit-spectrum-{key}.png", 140, 88, 10)
+                pic = rounded_thumb(f"{WALLS}/thumbs/summit-summit-{key}.png", 140, 88, 10)
             v.pack_start(pic, False, False, 0)
             v.pack_start(label(name, xalign=0.5), False, False, 0)
             btn.add(v); btn.connect("toggled", self.on_mode, key)
@@ -426,6 +427,7 @@ class SharingPage(Gtk.Box):
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.pack_start(card(section("Sharing", f"Your Mac finds this iMac as {HOST}.local on the same Wi-Fi. Everything here is off until you turn it on.")), False, False, 0)
+        self.pack_start(self.apple_card(), False, False, 0)
         self.tm_spin = Gtk.SpinButton.new_with_range(50, 4000, 50); self.tm_spin.set_value(300)
         tm = Gtk.Box(spacing=8)
         self.tm_check = Gtk.CheckButton(label="Also accept Time Machine backups, up to", active=tm_enabled())
@@ -443,6 +445,79 @@ class SharingPage(Gtk.Box):
             if i: box.pack_start(Gtk.Separator(), False, False, 0)
             box.pack_start(r, False, False, 0)
         self.pack_start(card(box), False, False, 0)
+
+    # ---- Apple devices and Apple Account
+    def apple_card(self):
+        def action_row(icon, title, subtitle, button, cb):
+            r = Gtk.Box(spacing=14)
+            img = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.DND); img.set_pixel_size(32); r.pack_start(img, False, False, 0)
+            txt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            txt.pack_start(label(f"<b>{GLib.markup_escape_text(title)}</b>", markup=True), False, False, 0)
+            txt.pack_start(label(f"<small>{subtitle}</small>", "summit-subtle", markup=True), False, False, 0)
+            r.pack_start(txt, True, True, 0)
+            if button:
+                b = Gtk.Button(label=button, valign=Gtk.Align.CENTER); b.connect("clicked", lambda *_: cb()); r.pack_end(b, False, False, 0)
+            r.text_box = txt
+            return r
+        cable = ("Connect it with its cable and tap <b>Trust</b> on the device. It then appears in Files, with its photos and app documents."
+                 if shutil.which("usbmuxd") or os.path.exists("/usr/sbin/usbmuxd") else
+                 "Support for this is still being installed; it will be ready after the next restart.")
+        self.macs_row = action_row("network-workgroup", "Macs on this network", "Looking…", None, None)
+        self.macs_box = Gtk.Box(spacing=8); self.macs_row.text_box.pack_start(self.macs_box, False, False, 4)
+        rows = [
+            action_row("summit-icloud", "iCloud", "Mail, Photos, iCloud Drive, Notes, Reminders, Calendar, Find My, Pages, Numbers and Keynote from your Apple Account, "
+                       "each in its own window. You sign in on Apple's own page.", "Open", lambda: subprocess.Popen(["summit-icloud"], start_new_session=True)),
+            action_row("summit-drop", "Summit Drop", "Send photos and files to and from an iPhone, iPad or Mac on the same Wi-Fi. The Apple device only needs its "
+                       "Camera and Safari.", "Open", lambda: subprocess.Popen(["summit-drop"], start_new_session=True)),
+            action_row("phone", "iPhone and iPad by cable", cable, None, None),
+            self.macs_row,
+            SwitchRow("audio-speakers", "AirPlay Speakers", "Play this computer's sound on an Apple TV, HomePod or AirPlay speaker: when on, they are listed as outputs "
+                      "in the sound menu.", os.path.exists(autostart_path("airplay-speakers")), self.toggle_airplay_speakers),
+        ]
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        box.pack_start(label("<b>Apple devices and Apple Account</b>", markup=True), False, False, 0)
+        for i, r in enumerate(rows):
+            if i: box.pack_start(Gtk.Separator(), False, False, 0)
+            box.pack_start(r, False, False, 0)
+        threading.Thread(target=self.find_macs, daemon=True).start()
+        return card(box)
+
+    def find_macs(self):
+        """Macs sharing files on this network (Bonjour), so their shared folders are one click away."""
+        hosts = {}
+        r = sh("avahi-browse", "-tpr", "_smb._tcp", timeout=12)
+        me = HOST.lower()
+        for line in (r.stdout or "").splitlines():
+            f = line.split(";")
+            if len(f) > 7 and f[0] == "=" and f[2] == "IPv4":
+                host = f[6]
+                if host.lower().split(".")[0] != me: hosts.setdefault(host, re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1))), f[3]))
+        GLib.idle_add(self.show_macs, hosts)
+
+    def show_macs(self, hosts):
+        sub = self.macs_row.text_box.get_children()[1]
+        if not hosts:
+            sub.set_markup("<small>None found. On the Mac, turn on <b>System Settings → General → Sharing → File Sharing</b>, then reopen this page.</small>")
+            return False
+        sub.set_markup("<small>Open a Mac's shared folders in Files. Sign in with your name and password on that Mac.</small>")
+        for host, name in sorted(hosts.items(), key=lambda kv: kv[1].lower())[:6]:
+            b = Gtk.Button(label=name); b.set_tooltip_text(f"smb://{host}")
+            b.connect("clicked", lambda _b, h=host: subprocess.Popen(["thunar", f"smb://{h}/"], start_new_session=True))
+            self.macs_box.pack_start(b, False, False, 0)
+        self.macs_box.show_all()
+        return False
+
+    def toggle_airplay_speakers(self, on):
+        if on:
+            r = sh("pactl", "load-module", "module-raop-discover")
+            if r.returncode != 0:
+                m = Gtk.MessageDialog(transient_for=self.get_toplevel(), modal=True, message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.OK,
+                                      text="AirPlay speakers couldn't be turned on")
+                m.format_secondary_text((r.stderr or "The sound system didn't accept it.").strip()[-300:]); m.run(); m.destroy(); return False
+            set_autostart("airplay-speakers", "AirPlay Speakers", "sh -c 'sleep 8; pactl load-module module-raop-discover'", True)
+        else:
+            set_autostart("airplay-speakers", "", "", False); sh("pactl", "unload-module", "module-raop-discover")
+        return True
 
     def ask_password(self, title, text, max_len=0):
         d = Gtk.Dialog(title=title, transient_for=self.get_toplevel(), modal=True)

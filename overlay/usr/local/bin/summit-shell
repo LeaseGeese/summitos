@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """summit-shell: Spotlight, Launchpad and Control Center in one small background process,
 so they open instantly. Controlled with `summit-shell-ctl spotlight|launchpad|control-center`."""
-import os, sys, re, ast, operator, threading, time, subprocess, importlib.machinery, importlib.util
+import os, sys, re, math, ast, operator, threading, time, subprocess, importlib.machinery, importlib.util
 # apps installed from the App Store (Flatpak) must show up at once, even before the next login
 _dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
 for _d in (os.path.expanduser("~/.local/share/flatpak/exports/share"), "/var/lib/flatpak/exports/share"):
@@ -13,6 +13,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gtk, Gdk, Gio, GLib, Pango, GdkPixbuf
+import cairo
 
 HOME = os.path.expanduser("~")
 APP_ID = "org.summitos.Shell"
@@ -249,6 +250,33 @@ class Spotlight(Gtk.Window):
             cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD); cb.set_text(val.replace(",", ""), -1); cb.store()
 
 # ------------------------------------------------------------------ Launchpad
+class LpIcon(Gtk.DrawingArea):
+    """A Launchpad icon that can grow smoothly: drawn at BASE px, up to BASE * MAX under the pointer."""
+    BASE = 80; MAX = 1.26
+    def __init__(self, gicon):
+        super().__init__()
+        self.scale = 1.0; self.target = 1.0
+        full = int(self.BASE * self.MAX + 0.5)
+        self.set_size_request(full + 2, full + 2)
+        self.surface = None; self._gicon = gicon; self._full = full
+        self.connect("draw", self.on_draw)
+    def load(self):
+        f = self.get_scale_factor(); theme = Gtk.IconTheme.get_default()
+        for g in (self._gicon, Gio.ThemedIcon.new("application-x-executable")):
+            try:
+                info = theme.lookup_by_gicon_for_scale(g, self._full, f, Gtk.IconLookupFlags.FORCE_SIZE)
+                if info: self.surface = info.load_surface(self.get_window()); return
+            except Exception:
+                pass
+    def on_draw(self, w, cr):
+        if self.surface is None: self.load()
+        if self.surface is None: return False
+        a = self.get_allocation(); k = self.BASE * self.scale / self._full
+        cr.translate(a.width / 2, a.height / 2); cr.scale(k, k); cr.translate(-self._full / 2, -self._full / 2)
+        cr.set_source_surface(self.surface, 0, 0)
+        cr.get_source().set_filter(cairo.FILTER_GOOD); cr.paint()
+        return False
+
 class Launchpad(Gtk.Window):
     def __init__(self, shell):
         super().__init__(type=Gtk.WindowType.TOPLEVEL, title="Launchpad")
@@ -264,7 +292,7 @@ class Launchpad(Gtk.Window):
         self.entry.set_margin_top(48)
         outer.pack_start(self.entry, False, False, 0)
         self.flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.SINGLE, homogeneous=True, max_children_per_line=7,
-                                min_children_per_line=7, column_spacing=18, row_spacing=22, activate_on_single_click=True,
+                                min_children_per_line=7, column_spacing=18, row_spacing=10, activate_on_single_click=True,
                                 valign=Gtk.Align.START)
         self.flow.set_filter_func(self.filter)
         self.flow.connect("child-activated", self.on_child)
@@ -277,7 +305,41 @@ class Launchpad(Gtk.Window):
         self.entry.connect("activate", lambda *_: self.launch_selected())
         self.connect("key-press-event", self.on_key)
         self.connect("focus-out-event", lambda *_: GLib.timeout_add(100, self.hide_if_unfocused))
+        self._tick = 0; self._last = None; self._still = 0
+        self.connect("map", self.hover_start); self.connect("unmap", self.hover_stop)
         self.populate()
+
+    # ---- hover: the icon under the pointer grows and its neighbours follow, like a ripple
+    def hover_start(self, *_):
+        if not self._tick and not os.path.exists(os.path.join(HOME, ".config", "summit", "no-launchpad-hover")):
+            self._last = None; self._still = 0
+            self._tick = self.add_tick_callback(self.hover_tick)
+    def hover_stop(self, *_):
+        if self._tick: self.remove_tick_callback(self._tick); self._tick = 0
+        for c in self.flow.get_children():
+            ic = getattr(c, "icon", None)
+            if ic: ic.scale = ic.target = 1.0
+    def hover_tick(self, w, clock):
+        win = self.get_window()
+        if win is None: return True
+        seat = self.get_display().get_default_seat(); _, px, py, _ = win.get_device_position(seat.get_pointer())
+        now = clock.get_frame_time(); dt = min(0.05, (now - self._last) / 1e6) if self._last else 0.016; self._last = now
+        ease = 1 - math.exp(-dt * 14)                      # each icon follows its target smoothly
+        radius = None; moving = False
+        for c in self.flow.get_children():
+            ic = getattr(c, "icon", None)
+            if ic is None or not c.get_mapped(): continue
+            a = ic.get_allocation()
+            if radius is None: radius = (c.get_allocation().width + 18) * 1.5
+            t = ic.translate_coordinates(self, a.width / 2, a.height / 2)
+            if t is None: continue
+            d = math.hypot(px - t[0], py - t[1])
+            ic.target = 1 + (LpIcon.MAX - 1) * math.exp(-(d / radius) ** 2 * 2.2) if d < radius * 2 else 1.0
+            if abs(ic.target - ic.scale) > 0.002:
+                ic.scale += (ic.target - ic.scale) * ease; ic.queue_draw(); moving = True
+            elif ic.scale != ic.target:
+                ic.scale = ic.target; ic.queue_draw()
+        return True
 
     def hide_if_unfocused(self):
         if not self.is_active(): self.hide()
@@ -317,9 +379,8 @@ class Launchpad(Gtk.Window):
             cats = set((a.get_categories() or "").split(";"))
             if not (cats & LAUNCHPAD_CATS): continue
             child = Gtk.FlowBoxChild(); child.app = a; child.get_style_context().add_class("summit-lp-tile")
-            v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=8)
-            img = Gtk.Image.new_from_gicon(a.get_icon() or Gio.ThemedIcon.new("application-x-executable"), Gtk.IconSize.DIALOG)
-            img.set_pixel_size(80)
+            v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0, margin=2)
+            img = LpIcon(a.get_icon() or Gio.ThemedIcon.new("application-x-executable")); child.icon = img
             l = Gtk.Label(label=a.get_name(), justify=Gtk.Justification.CENTER, max_width_chars=16, wrap=True, lines=2)
             l.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR); l.set_ellipsize(Pango.EllipsizeMode.END)
             l.get_style_context().add_class("summit-lp-label")

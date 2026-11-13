@@ -20,7 +20,7 @@ CFG_DIR = os.path.join(HOME, ".config", "summit")
 STATE = os.path.join(CFG_DIR, "appearance.json")
 WALLS = "/usr/share/backgrounds/summitos"
 
-DEFAULTS = {"accent": "blue", "mode": "light", "wallpaper": "spectrum", "glass": "on",
+DEFAULTS = {"accent": "blue", "mode": "light", "wallpaper": "summit", "glass": "on",
             "dock_size": 52, "dock_zoom": True, "dock_autohide": False, "text": "default"}
 TEXT = {"small": 9, "default": 10, "large": 11.5, "larger": 13}
 
@@ -63,11 +63,11 @@ def is_dark(s, now=None):
     return s["mode"] == "dark"
 
 def wallpaper_path(s, dark):
-    w = s.get("wallpaper") or "spectrum"
+    w = s.get("wallpaper") or "summit"
     if os.path.isabs(w) and os.path.exists(w): return w
     name = s["accent"] if w == "accent" else w
     p = f"{WALLS}/summit-{name}-{'dark' if dark else 'light'}.jpg"
-    return p if os.path.exists(p) else f"{WALLS}/summit-spectrum-{'dark' if dark else 'light'}.jpg"
+    return p if os.path.exists(p) else f"{WALLS}/summit-summit-{'dark' if dark else 'light'}.jpg"
 
 # ---------------------------------------------------------------- helpers
 def run(*a):
@@ -352,7 +352,7 @@ XfdesktopIconView.view:active {{ background-color: alpha(@summit_accent, 0.55); 
 .summit-launchpad-search {{ border-radius: 12px; min-height: 34px; color: #ffffff; background-color: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.32); box-shadow: none; }}
 .summit-launchpad-search image {{ color: rgba(255,255,255,0.8); }}
 flowboxchild.summit-lp-tile {{ border-radius: 22px; padding: 4px; }}
-flowboxchild.summit-lp-tile:hover {{ background-color: rgba(255,255,255,0.10); }}
+flowboxchild.summit-lp-tile:hover {{ background-color: transparent; }}
 flowboxchild.summit-lp-tile:selected {{ background-color: rgba(255,255,255,0.20); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35); }}
 .summit-lp-label {{ color: #ffffff; text-shadow: 0 1px 2px rgba(0,0,0,0.55); }}
 .summit-card {{ border-radius: 14px; border: 1px solid alpha(@theme_fg_color, 0.08); background-color: alpha(@theme_base_color, 0.85); }}
@@ -378,7 +378,57 @@ button.summit-pick:checked label {{ color: @theme_fg_color; font-weight: 600; }}
 scale.summit trough {{ min-height: 6px; border-radius: 6px; }}
 scale.summit highlight {{ background-color: @summit_accent; border-radius: 6px; }}
 """
+    # the same close / minimise / zoom buttons in every app: apps that draw their own title bar (header-bar
+    # apps, and App Store apps, which read these files too) get Summit's red, yellow and green lights
+    idle = "#5c5c62" if dark else "#d0d0d4"
+    css += f"""
+/* window buttons in apps that draw their own title bar */
+headerbar button.titlebutton.close, headerbar button.titlebutton.minimize, headerbar button.titlebutton.maximize,
+.titlebar button.titlebutton.close, .titlebar button.titlebutton.minimize, .titlebar button.titlebutton.maximize {{
+  min-width: 12px; min-height: 12px; padding: 0; margin: 0 5px; border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.16); box-shadow: inset 0 1px rgba(255,255,255,0.35);
+  background-image: none; color: transparent; -gtk-icon-shadow: none; transition: none; outline: none; }}
+headerbar button.titlebutton.close image, headerbar button.titlebutton.minimize image, headerbar button.titlebutton.maximize image,
+.titlebar button.titlebutton.close image, .titlebar button.titlebutton.minimize image, .titlebar button.titlebutton.maximize image {{
+  margin: -2px; -gtk-icon-transform: scale(0.56); }}
+headerbar button.titlebutton.close, .titlebar button.titlebutton.close {{ background-color: #FF5F57; }}
+headerbar button.titlebutton.minimize, .titlebar button.titlebutton.minimize {{ background-color: #FEBC2E; }}
+headerbar button.titlebutton.maximize, .titlebar button.titlebutton.maximize {{ background-color: #28C840; }}
+headerbar button.titlebutton.close:hover, headerbar button.titlebutton.minimize:hover, headerbar button.titlebutton.maximize:hover,
+.titlebar button.titlebutton.close:hover, .titlebar button.titlebutton.minimize:hover, .titlebar button.titlebutton.maximize:hover {{ color: rgba(0,0,0,0.6); }}
+headerbar button.titlebutton.close:active, .titlebar button.titlebutton.close:active {{ background-color: #D94A43; }}
+headerbar button.titlebutton.minimize:active, .titlebar button.titlebutton.minimize:active {{ background-color: #D9A023; }}
+headerbar button.titlebutton.maximize:active, .titlebar button.titlebutton.maximize:active {{ background-color: #1FA833; }}
+headerbar button.titlebutton.close:backdrop, headerbar button.titlebutton.minimize:backdrop, headerbar button.titlebutton.maximize:backdrop,
+.titlebar button.titlebutton.close:backdrop, .titlebar button.titlebutton.minimize:backdrop, .titlebar button.titlebutton.maximize:backdrop {{
+  background-color: {idle}; color: transparent; }}
+"""
     write_if_changed(os.path.join(gtkdir, "summit.css"), css)
+    # newer (GTK 4) apps
+    gtk4 = os.path.join(home, ".config", "gtk-4.0"); os.makedirs(gtk4, exist_ok=True)
+    css4 = f"""/* Summit OS window buttons for GTK 4 apps: generated by summit-appearance, edits are overwritten */
+windowcontrols {{ border-spacing: 0; }}
+windowcontrols > button.close, windowcontrols > button.minimize, windowcontrols > button.maximize {{
+  min-width: 14px; min-height: 14px; padding: 0; margin: 0 5px; background: none; box-shadow: none; border: none; outline: none; }}
+windowcontrols > button.close > image, windowcontrols > button.minimize > image, windowcontrols > button.maximize > image {{
+  min-width: 14px; min-height: 14px; padding: 0; margin: 0; border-radius: 999px; -gtk-icon-size: 8px; color: transparent;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.16); transition: none; }}
+windowcontrols > button.close > image {{ background-color: #FF5F57; }}
+windowcontrols > button.minimize > image {{ background-color: #FEBC2E; }}
+windowcontrols > button.maximize > image {{ background-color: #28C840; }}
+windowcontrols > button.close:hover > image, windowcontrols > button.minimize:hover > image, windowcontrols > button.maximize:hover > image {{ color: rgba(0,0,0,0.6); }}
+windowcontrols > button.close:active > image {{ background-color: #D94A43; }}
+windowcontrols > button.minimize:active > image {{ background-color: #D9A023; }}
+windowcontrols > button.maximize:active > image {{ background-color: #1FA833; }}
+windowcontrols > button.close:backdrop > image, windowcontrols > button.minimize:backdrop > image, windowcontrols > button.maximize:backdrop > image {{
+  background-color: {idle}; color: transparent; }}
+"""
+    write_if_changed(os.path.join(gtk4, "summit.css"), css4)
+    main4 = os.path.join(gtk4, "gtk.css")
+    try: existing4 = open(main4).read()
+    except OSError: existing4 = ""
+    if '@import url("summit.css");' not in existing4:
+        with open(main4, "w") as f: f.write('@import url("summit.css");\n' + existing4)
     main = os.path.join(gtkdir, "gtk.css")
     try: existing = open(main).read()
     except OSError: existing = ""
@@ -417,39 +467,53 @@ rules = (
   {{ match = "fullscreen"; shadow = false; corner-radius = 0; }},
   {"{ match = " + chr(34) + "(" + glass + ") && !_GTK_FRAME_EXTENTS@" + chr(34) + "; blur-background = true; }," if blur else ""}
 
-  # motion, macOS style and all on the GPU: windows open and close with a quick scale and fade,
+  # motion, macOS style and all on the GPU: windows open and close with an unhurried scale and fade,
   # minimise drops toward the dock, menus fade, Launchpad zooms. The menu bar, dock and desktop never move.
   {{ match = "window_type = 'normal' || window_type = 'dialog' || window_type = 'utility'";
      animations = (
-       {{ triggers = [ "open" ];  preset = "appear";    scale = 0.94; duration = 0.17; }},
-       {{ triggers = [ "close" ]; preset = "disappear"; scale = 0.95; duration = 0.13; }},
+       # open: grows from 88% while fading in, fast at first and settling gently (about a third of a second,
+       # like macOS); close: eases away to 90% a little quicker. The shadow follows the window.
+       {{ triggers = [ "open" ];
+          p = {{ curve = "cubic-bezier(0.16, 1.0, 0.3, 1.0)"; duration = 0.34; start = 1; end = 0; }};
+          scale-x = "1 - 0.12 * p"; scale-y = "1 - 0.12 * p";
+          offset-x = "(1 - scale-x) / 2 * window-width"; offset-y = "(1 - scale-y) / 2 * window-height";
+          opacity = {{ curve = "cubic-bezier(0.0, 0.0, 0.3, 1.0)"; duration = 0.22; start = 0; end = "window-raw-opacity"; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity";
+          shadow-scale-x = "scale-x"; shadow-scale-y = "scale-y"; shadow-offset-x = "offset-x"; shadow-offset-y = "offset-y"; }},
+       {{ triggers = [ "close" ];
+          p = {{ curve = "cubic-bezier(0.4, 0.0, 0.8, 0.6)"; duration = 0.24; start = 0; end = 1; }};
+          scale-x = "1 - 0.10 * p"; scale-y = "1 - 0.10 * p";
+          offset-x = "(1 - scale-x) / 2 * window-width"; offset-y = "(1 - scale-y) / 2 * window-height";
+          opacity = {{ curve = "cubic-bezier(0.4, 0.0, 1.0, 1.0)"; duration = 0.24; start = "window-raw-opacity-before"; end = 0; }};
+          blur-opacity = "opacity"; shadow-opacity = "opacity";
+          shadow-scale-x = "scale-x"; shadow-scale-y = "scale-y"; shadow-offset-x = "offset-x"; shadow-offset-y = "offset-y"; }},
        # minimize: shrink down into the dock (bottom centre of the screen) while fading, and back out again
        {{ triggers = [ "hide" ];
-          p = {{ curve = "cubic-bezier(0.45, 0.0, 0.55, 1.0)"; duration = 0.30; start = 0; end = 1; }};
+          p = {{ curve = "cubic-bezier(0.45, 0.0, 0.55, 1.0)"; duration = 0.38; start = 0; end = 1; }};
           scale-x = "1 - 0.88 * p"; scale-y = "1 - 0.92 * p";
           offset-x = "p * (window-monitor-x + window-monitor-width / 2 - window-x - window-width * 0.06)";
           offset-y = "p * (window-monitor-y + window-monitor-height - 36 - window-y - window-height * 0.04)";
-          opacity = {{ curve = "cubic-bezier(0.6, 0.0, 1.0, 1.0)"; duration = 0.30; start = "window-raw-opacity-before"; end = 0; }};
+          opacity = {{ curve = "cubic-bezier(0.6, 0.0, 1.0, 1.0)"; duration = 0.38; start = "window-raw-opacity-before"; end = 0; }};
           blur-opacity = "opacity"; shadow-opacity = "opacity";
           shadow-scale-x = "scale-x"; shadow-scale-y = "scale-y"; shadow-offset-x = "offset-x"; shadow-offset-y = "offset-y"; }},
        {{ triggers = [ "show" ];
-          p = {{ curve = "cubic-bezier(0.2, 0.8, 0.3, 1.0)"; duration = 0.28; start = 1; end = 0; }};
+          p = {{ curve = "cubic-bezier(0.2, 0.8, 0.3, 1.0)"; duration = 0.36; start = 1; end = 0; }};
           scale-x = "1 - 0.88 * p"; scale-y = "1 - 0.92 * p";
           offset-x = "p * (window-monitor-x + window-monitor-width / 2 - window-x - window-width * 0.06)";
           offset-y = "p * (window-monitor-y + window-monitor-height - 36 - window-y - window-height * 0.04)";
-          opacity = {{ curve = "cubic-bezier(0.0, 0.0, 0.4, 1.0)"; duration = 0.28; start = 0; end = "window-raw-opacity"; }};
+          opacity = {{ curve = "cubic-bezier(0.0, 0.0, 0.4, 1.0)"; duration = 0.30; start = 0; end = "window-raw-opacity"; }};
           blur-opacity = "opacity"; shadow-opacity = "opacity";
           shadow-scale-x = "scale-x"; shadow-scale-y = "scale-y"; shadow-offset-x = "offset-x"; shadow-offset-y = "offset-y"; }}
      ); }},
   {{ match = "({menus} || window_type = 'notification') && class_g != 'Summit-transition'";
      animations = (
-       {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 0.98; duration = 0.10; }},
-       {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 1.0;  duration = 0.08; }}
+       {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 0.98; duration = 0.14; }},
+       {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 1.0;  duration = 0.11; }}
      ); }},
   {{ match = "class_g = 'Summit-shell' && name = 'Launchpad'";
      animations = (
-       {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 1.05; duration = 0.20; }},
-       {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 1.05; duration = 0.14; }}
+       {{ triggers = [ "open", "show" ];  preset = "appear";    scale = 1.06; duration = 0.28; }},
+       {{ triggers = [ "close", "hide" ]; preset = "disappear"; scale = 1.05; duration = 0.20; }}
      ); }},
   # Spotlight pops in place (it must never use the minimise-to-dock motion when it hides)
   {{ match = "class_g = 'Summit-shell' && name = 'Spotlight'";
@@ -734,6 +798,8 @@ def main(argv):
         finally: transition_end(t)
         return 0
     if cmd == "session-start":
+        try: subprocess.Popen(["summit-window-buttons"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError: pass
         if not os.path.exists(STATE):
             save(s); apply(s, restart_compositor=False); return 0
         write_files(s)

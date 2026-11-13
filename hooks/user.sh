@@ -32,4 +32,14 @@ if [ -f /usr/share/xdg-desktop-portal/xfce-portals.conf ] && [ ! -e "$HOME/.conf
   touch "$HOME/.config/summit/portal-1251"
   systemctl --user try-restart xdg-desktop-portal.service >/dev/null 2>&1
 fi
+# 1.29.0: the same window buttons in every app (App Store apps and browsers; see summit-window-buttons)
+summit-window-buttons >/dev/null 2>&1
+# 1.29.0: photo wallpapers. The drawn Forest and Meadow pictures are gone and the default is now the Summit
+# photograph; anyone still on the old default or a removed picture moves to it once (other choices are kept)
+if [ ! -e "$HOME/.config/summit/walls-1290" ]; then
+  mkdir -p "$HOME/.config/summit"; touch "$HOME/.config/summit/walls-1290"
+  w=$(summit-appearance get 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("wallpaper",""))' 2>/dev/null)
+  case "$w" in spectrum|forest|hills|"") summit-appearance set wallpaper=summit >/dev/null 2>&1 ;;
+               peaks|lake|coast|dunes) summit-appearance apply >/dev/null 2>&1 ;; esac
+fi
 exit 0

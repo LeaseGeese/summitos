@@ -44,7 +44,7 @@ done < "$REPO/build/diversions.txt"
 # 3. Summit files
 cp -a "$REPO/overlay/." "$R/"
 cp -a "$REPO/build/iso-only/." "$R/"
-ln -sf /usr/share/backgrounds/summitos/summit-spectrum-light.jpg "$R/usr/share/backgrounds/xfce/xfce-shapes.svg"
+ln -sf /usr/share/backgrounds/summitos/summit-summit-light.jpg "$R/usr/share/backgrounds/xfce/xfce-shapes.svg"
 while read -r u; do [ -n "$u" ] && ln -sf /dev/null "$R/etc/systemd/system/$u"; done < "$REPO/build/masked-units.txt"
 
 # 4. system tweaks done inside the image

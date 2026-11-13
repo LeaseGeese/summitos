@@ -1,2 +1,14 @@
 # Files to delete from installed systems, one path per line (relative to /), e.g.
 # usr/local/bin/old-tool
+usr/share/backgrounds/summitos/summit-forest-light.jpg
+usr/share/backgrounds/summitos/blur/summit-forest-light.jpg
+usr/share/backgrounds/summitos/thumbs/summit-forest-light.png
+usr/share/backgrounds/summitos/summit-forest-dark.jpg
+usr/share/backgrounds/summitos/blur/summit-forest-dark.jpg
+usr/share/backgrounds/summitos/thumbs/summit-forest-dark.png
+usr/share/backgrounds/summitos/summit-hills-light.jpg
+usr/share/backgrounds/summitos/blur/summit-hills-light.jpg
+usr/share/backgrounds/summitos/thumbs/summit-hills-light.png
+usr/share/backgrounds/summitos/summit-hills-dark.jpg
+usr/share/backgrounds/summitos/blur/summit-hills-dark.jpg
+usr/share/backgrounds/summitos/thumbs/summit-hills-dark.png
