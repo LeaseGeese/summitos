@@ -213,7 +213,7 @@ def needs_reboot(changed):
                                                           "etc/modprobe.d/", "etc/modules-load.d/", "usr/share/plymouth/"))
 
 def live_session():
-    try: return "boot=casper" in open("/proc/cmdline").read()
+    try: return any(k in open("/proc/cmdline").read() for k in ("boot=live", "boot=casper"))
     except OSError: return False
 
 def set_os_version(version):

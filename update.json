@@ -1,31 +1,11 @@
 {
-  "version": "1.29.0",
-  "build": 12900,
-  "restart": "reboot",
+  "version": "2.0.0",
+  "build": 20000,
+  "restart": "none",
   "notes": [
-    "New look: a black-and-white Summit mark (two peaks, one snow line) on the startup screen, in the menu bar, About and the installer",
-    "Photo wallpapers: eight real mountain and landscape photographs (Summit, Dolomites, Yosemite, Alpine Lake, Highlands, Desert, Dunes, Coast), each with a day picture for Light and a night picture for Dark. Summit is the new default; the colour wallpapers are still there",
-    "Windows open, close and minimise more slowly and settle gently instead of snapping",
-    "Launchpad: the icon under the pointer grows and its neighbours follow in a ripple",
-    "The same red, yellow and green window buttons in every app, including apps that draw their own title bar, App Store apps, Chrome and Firefox",
-    "iCloud (in Launchpad): Mail, Photos, iCloud Drive, Notes, Reminders, Calendar, Contacts, Find My, Pages, Numbers, Keynote, Apple Music and Apple TV in their own windows, signed in with your Apple Account on Apple's page",
-    "Summit Drop (in Launchpad): send photos and files to and from an iPhone, iPad or Mac on the same Wi-Fi by scanning a code; nothing to install on the Apple device",
-    "Settings → Sharing: a new Apple section with iCloud, Summit Drop, iPhone and iPad by cable (they appear in Files), Macs on this network, and AirPlay Speakers"
+    "Summit OS 2.0 alpha 1: Summit rebuilt from an empty system on Debian 13. A live image to try from a USB stick; it does not install yet."
   ],
   "apt": {
-    "install": [
-      "flatpak",
-      "xdg-desktop-portal",
-      "xdg-desktop-portal-gtk",
-      "xinput",
-      "libfuse2t64",
-      "python3-xlib",
-      "gir1.2-webkit2-4.1",
-      "qrencode",
-      "usbmuxd",
-      "libimobiledevice-utils",
-      "ifuse"
-    ],
-    "remove": []
+    "install": []
   }
 }

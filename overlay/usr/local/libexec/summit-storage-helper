@@ -15,7 +15,7 @@ case "$ACTION" in
   setup)
     [[ "$DEV" =~ ^/dev/(sd[a-z]+|vd[a-z]+|nvme[0-9]+n[0-9]+)$ ]] || fail "Not a whole drive: $DEV"
     [ -b "$DEV" ] || fail "Drive not found: $DEV"
-    grep -q "boot=casper" /proc/cmdline && fail "Storage can only be set up after Summit is installed."
+    grep -Eq "boot=(live|casper)" /proc/cmdline && fail "Storage can only be set up after Summit is installed."
     # safety: nothing on this drive may be the system, boot or swap
     ROOTSRC="$(findmnt -no SOURCE / || true)"; EFISRC="$(findmnt -no SOURCE /boot/efi || true)"
     for p in $(lsblk -nrpo NAME "$DEV"); do

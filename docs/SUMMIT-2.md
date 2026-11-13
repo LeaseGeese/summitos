@@ -1,6 +1,11 @@
 # Summit OS 2.0: plan
 
-Status: planning. Nothing here changes Summit 1.x; the `main` branch and its updates carry on as before.
+Status: phase 1 done. **2.0 alpha 1** is a live image built by `build/v2/build-live.sh` (1.1 GB, 1032 packages;
+Summit 1.21 was 1.6 GB and 1178). It boots to the Summit desktop in a virtual machine; it has not yet run on
+real hardware. Nothing here changes Summit 1.x; the `main` branch and its updates carry on as before.
+
+Build it: `sudo build/v2/build-live.sh [workdir]` on a Debian or Ubuntu machine. The package list with the
+reason for every entry is `build/v2/packages.txt`; what the finished image contains is `build/v2/image-manifest.txt`.
 
 ## What 2.0 is
 
@@ -72,7 +77,18 @@ keyboard nothing can be typed that early.
 | 4 | Network defaults, sandbox review, `docs/NETWORK.md` audit | VM |
 | 5 | Public release: wider hardware testing, build server that rebuilds weekly for security fixes, download page | other machines |
 
-## Known risks, to check in phase 1
+## What phase 1 settled
+
+- **Kernel:** Debian's stable kernel (6.12). Summit's Magic Mouse driver compiles against it unchanged.
+- **Wi-Fi:** the Broadcom driver compiles at image build time and ships as a ready module.
+- **No compiler in the image:** both drivers are built during the image build, then the compiler, kernel
+  headers and build tools are removed; the build fails if any remain.
+- **Dock and compositor:** Debian 13 carries both, the compositor in the same version Summit 1.x builds itself.
+- **Not in Debian 13:** the keyboard-and-mouse sharing program (Barrier) and the old password-prompt
+  agent. The prompt agent is replaced; keyboard-and-mouse sharing is missing from alpha 1.
+- **Still as in 1.x:** the alpha has no firewall rules, no installer and no image updates; those are phases 2 to 4.
+
+## Known risks, as written before phase 1
 
 - **Kernel.** Debian stable ships an older kernel than Summit 1.x uses. Summit's Magic Mouse scrolling
   driver was written against the newer one and must be ported or the newer kernel taken from Debian backports.

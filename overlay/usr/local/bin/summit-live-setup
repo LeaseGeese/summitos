@@ -1,7 +1,8 @@
 #!/bin/sh
 # Live session only: put the installer on the desktop and in the dock
-grep -q "boot=casper" /proc/cmdline || exit 0
+grep -Eq "boot=(live|casper)" /proc/cmdline || exit 0
 mkdir -p "$HOME/Desktop"
+[ -e /usr/share/applications/summit-install.desktop ] || exit 0   # no installer in this image yet
 cp /usr/share/applications/summit-install.desktop "$HOME/Desktop/" 2>/dev/null
 chmod +x "$HOME/Desktop/summit-install.desktop"
 gio set "$HOME/Desktop/summit-install.desktop" metadata::xfce-exe-checksum "$(sha256sum "$HOME/Desktop/summit-install.desktop" | cut -d' ' -f1)" 2>/dev/null

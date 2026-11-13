@@ -1,0 +1,2 @@
+/usr/share/applications/org.pulseaudio.pavucontrol.desktop /usr/share/applications/org.pulseaudio.pavucontrol.desktop.summit-orig
+/usr/share/backgrounds/xfce/xfce-x.svg /usr/share/backgrounds/xfce/xfce-x.svg.summit-orig

@@ -12,7 +12,7 @@ HOST = socket.gethostname()
 WALLS = "/usr/share/backgrounds/summitos"
 CFG = os.path.join(HOME, ".config", "summit")
 AUTOSTART = os.path.join(HOME, ".config", "autostart")
-LIVE = "boot=casper" in open("/proc/cmdline").read()
+LIVE = any(k in open("/proc/cmdline").read() for k in ("boot=live", "boot=casper"))
 STORAGE_MNT = "/mnt/imac-hd"
 ACCENT_HEX = {"blue": "#1A73E8", "purple": "#9C3FD1", "pink": "#E0306F", "orange": "#EF6C00",
               "yellow": "#F5C400", "green": "#2E9E4F", "silver": "#9AA3AE"}
@@ -667,12 +667,12 @@ class UpdatePage(Gtk.Box):
         # --- history + system updates card
         self.hist = label("", "summit-subtle", markup=True)
         self.btn_back = Gtk.Button(label="Roll Back…"); self.btn_back.connect("clicked", self.on_rollback)
-        sysb = Gtk.Button(label="Ubuntu System Updates…")
+        sysb = Gtk.Button(label="Debian Security Updates…")
         sysb.connect("clicked", lambda *_: subprocess.Popen(["xfce4-terminal", "--title=System Updates", "-x", "sh", "-c",
-                      "echo 'Checking Ubuntu for security and app updates…'; sudo apt update && sudo apt full-upgrade; echo; read -p 'Press Return to close.' x"]))
+                      "echo 'Checking Debian for security updates…'; sudo apt update && sudo apt full-upgrade; echo; read -p 'Press Return to close.' x"]))
         logb = Gtk.Button(label="Show Log"); logb.connect("clicked", self.on_log)
         hb = Gtk.Box(spacing=8); hb.pack_start(self.btn_back, False, False, 0); hb.pack_start(sysb, False, False, 0); hb.pack_start(logb, False, False, 0)
-        self.pack_start(card(section("History", "Undo the last update if something isn't right. Ubuntu security updates are separate."),
+        self.pack_start(card(section("History", "Undo the last update if something isn't right. Debian security updates are separate."),
                              self.hist, hb), False, False, 0)
         self.refresh()
         self._timer = GLib.timeout_add_seconds(2, self.refresh)

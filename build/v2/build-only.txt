@@ -1,0 +1,3 @@
+# Needed only while the image is being built (to compile the Wi-Fi and Magic Mouse drivers).
+# Removed again before the image is packed, so no compiler ships in Summit.
+linux-headers-amd64 dkms broadcom-sta-dkms build-essential

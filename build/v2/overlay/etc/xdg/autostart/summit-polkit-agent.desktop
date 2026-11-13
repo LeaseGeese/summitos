@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Administrator Password Prompts
+Exec=/usr/lib/x86_64-linux-gnu/polkit-mate/polkit-mate-authentication-agent-1
+OnlyShowIn=XFCE;
+NoDisplay=true

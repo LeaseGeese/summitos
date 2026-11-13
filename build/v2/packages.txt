@@ -1,0 +1,62 @@
+# Summit OS 2.0: every package the image asks for, and why it is there.
+# Installed without "recommended" extras, on top of Debian's minimal base (about 220 MB).
+# Lines: package names, then "#" and the reason for the group.
+
+# --- starts the computer
+linux-image-amd64 initramfs-tools systemd-sysv dbus-user-session      # kernel, early start-up, system manager
+live-boot live-config live-config-systemd user-setup uuid-runtime     # run from a USB stick without installing
+plymouth plymouth-label plymouth-themes                               # the startup screen
+intel-microcode amd64-microcode                                       # processor security fixes
+
+# --- hardware support (firmware is what lets Wi-Fi, graphics and sound chips work at all)
+firmware-linux-free firmware-misc-nonfree firmware-intel-graphics firmware-amd-graphics
+firmware-iwlwifi firmware-realtek firmware-atheros firmware-brcm80211 firmware-sof-signed
+mbpfan brightnessctl                                                  # Mac fans and screen brightness
+bluez blueman                                                         # Bluetooth
+usbmuxd libimobiledevice-utils ifuse                                  # iPhone and iPad by cable
+pciutils usbutils smartmontools                                       # used by Summit's diagnose report and Disk Utility
+
+# --- network
+network-manager network-manager-gnome wpasupplicant iw rfkill iproute2 wireless-regdb   # Wi-Fi and wired networking
+avahi-daemon avahi-utils libnss-mdns                                  # finding Macs and printers by name (.local)
+nftables                                                              # the firewall
+openssh-server samba samba-vfs-modules x11vnc uxplay                  # Sharing switches (all off until turned on)
+ca-certificates curl                                                  # secure downloads (updates, App Store)
+
+# --- sound and video
+pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils rtkit pavucontrol pulseaudio-utils
+libspa-0.2-bluetooth                                                  # Bluetooth headphones and speakers
+gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl gstreamer1.0-x
+i965-va-driver intel-media-va-driver mesa-va-drivers                  # video decoding on the graphics chip
+
+# --- display
+xserver-xorg xserver-xorg-input-libinput xserver-xorg-video-intel xinit x11-xserver-utils x11-utils xinput
+xserver-xorg-video-fbdev xserver-xorg-video-vesa                      # the "safe graphics" start-up choice
+lightdm lightdm-gtk-greeter                                           # login screen
+
+# --- the desktop Summit is built from
+xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf xfce4-notifyd
+xfce4-power-manager xfce4-power-manager-plugins xfce4-pulseaudio-plugin xfce4-clipman-plugin
+xfce4-datetime-plugin xfce4-appmenu-plugin vala-panel-appmenu-common appmenu-gtk3-module
+xfce4-whiskermenu-plugin                                              # the Summit menu at the left of the menu bar
+xfce4-screenshooter xfce4-taskmanager xfce4-terminal
+plank picom rofi                                                      # Dock, window effects, Spotlight
+thunar thunar-archive-plugin thunar-volman tumbler gvfs gvfs-backends udisks2 upower   # Files, disks, power
+polkitd pkexec mate-polkit                                            # password prompts for administrator actions
+at-spi2-core                                                          # screen readers and other assistive tools
+dconf-cli dbus-x11 xdg-user-dirs xdg-utils xdg-desktop-portal xdg-desktop-portal-gtk libnotify-bin
+wmctrl xdotool redshift geoclue-2.0                                   # window control for gestures; Night Shift and its sunset schedule
+python3-gi python3-xlib gir1.2-gtk-3.0 gir1.2-notify-0.7 gir1.2-webkit2-4.1 librsvg2-common qrencode   # Summit's own apps
+
+# --- look
+orchis-gtk-theme papirus-icon-theme elementary-xfce-icon-theme adwaita-icon-theme
+fonts-inter fonts-jetbrains-mono fonts-liberation fonts-noto-color-emoji fonts-dejavu-core
+
+# --- apps in Launchpad
+epiphany-browser mousepad ristretto atril mpv gnome-calculator gnome-disk-utility gparted file-roller htop
+flatpak                                                               # App Store apps, sandboxed
+
+# --- system basics
+sudo locales tzdata console-setup keyboard-configuration earlyoom zram-tools
+dosfstools exfatprogs ntfs-3g                                         # reading USB sticks and Windows/Mac disks
+rsync unzip zip zstd xz-utils nano less file fastfetch lsb-release util-linux-extra eject
