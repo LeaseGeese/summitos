@@ -1,8 +1,18 @@
 # Summit OS 2.0: plan
 
-Status: phase 1 done. **2.0 alpha 1** is a live image built by `build/v2/build-live.sh` (1.1 GB, 1032 packages;
-Summit 1.21 was 1.6 GB and 1178). It boots to the Summit desktop in a virtual machine; it has not yet run on
-real hardware. Nothing here changes Summit 1.x; the `main` branch and its updates carry on as before.
+Status: **2.0 alpha 2** installs to a drive and updates over the air from this branch (`summit-2`), so the
+rest of 2.0 is developed on installed systems. Built by `build/v2/build-live.sh`: 1.1 GB live image; the
+installed system has about 1,040 packages (Summit 1.21 had 1,178) and no installer, live-session helpers or
+compiler. Tested in a virtual machine (install to an empty USB drive, start from it, sign in). On the 2014
+iMac, alpha 1 reached the desktop but had no sound and the Magic Mouse did not work; cause not yet known.
+Nothing here changes Summit 1.x; the `main` branch and its updates carry on as before.
+
+Alpha 2 uses the ordinary disk layout (one writable system partition), not the read-only A/B design below.
+Moving to that design will need one more fresh install. Until then:
+- Debian's kernel package is held, because the Wi-Fi and Magic Mouse drivers are built for one exact kernel
+  and the system has no compiler to rebuild them. Kernel updates will come with Summit updates.
+- Whole-disk encryption is switched off in the installer; home-folder encryption is still to come.
+- Secure Boot is not supported (the boot loader is unsigned). Macs don't use it; PCs need it turned off.
 
 Build it: `sudo build/v2/build-live.sh [workdir]` on a Debian or Ubuntu machine. The package list with the
 reason for every entry is `build/v2/packages.txt`; what the finished image contains is `build/v2/image-manifest.txt`.

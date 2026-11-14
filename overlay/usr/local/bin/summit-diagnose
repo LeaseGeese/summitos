@@ -58,6 +58,16 @@ grep -iE "magic|05ac|004c" /proc/bus/input/devices 2>/dev/null | head -4
 journalctl -k -b --no-pager -q 2>/dev/null | grep -iE "magicmouse|hid.*apple|bluetooth.*(fail|error)" | tail -n 6 | cut -c17-180
 journalctl -u bluetooth -b --no-pager -q 2>/dev/null | grep -iE "fail|error|reject|denied" | grep -v sap | tail -n 6 | cut -c17-180
 echo
+echo "--- sound"
+echo "cards: $(cat /proc/asound/cards 2>/dev/null | grep -E '^ *[0-9]' | sed 's/  */ /g' | tr '\n' ';')"
+for c in /proc/asound/card*/codec#*; do [ -e "$c" ] && echo "codec $(echo $c | cut -d/ -f4): $(grep -m1 '^Codec:' "$c" | cut -c8-)"; done
+echo "sound server: $(pactl info 2>/dev/null | grep -E 'Server Name|Default Sink' | cut -d: -f2- | xargs)"
+pactl list short sinks 2>/dev/null | awk '{print "output: " $2 "  " $NF}' | head -n 6
+pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null | head -n 1 | cut -c1-120; pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null
+pactl list cards 2>/dev/null | grep -E 'Name:|Active Profile:|available: (yes|unknown)' | sed 's/^[ \t]*//' | cut -c1-150 | head -n 14
+systemctl --user is-active pipewire pipewire-pulse wireplumber 2>/dev/null | tr '\n' ' '; echo "(pipewire, pulse, wireplumber)"
+amixer -c 1 scontents 2>/dev/null | grep -E "^Simple|\[(on|off)\]" | paste - - 2>/dev/null | cut -c1-140 | head -n 8
+journalctl -k -b --no-pager -q 2>/dev/null | grep -iE "snd_|hda|cirrus|cs42|sof-|firmware.*(fail|error|missing)" | tail -n 10 | cut -c17-200
 echo "--- recent errors"
 journalctl -b -p err --no-pager -q 2>/dev/null | tail -n 6 | cut -c17-160
 journalctl --user -b -p warning --no-pager -q 2>/dev/null | grep -iE 'summit|picom|plank|xfce|python' | tail -n 6 | cut -c17-160

@@ -10,10 +10,10 @@ navigation: widget
 strings:
     productName:         Summit OS
     shortProductName:    Summit
-    version:             1.21
-    shortVersion:        1.21
-    versionedName:       Summit OS 1.21
-    shortVersionedName:  Summit 1.21
+    version:             2.0
+    shortVersion:        2.0
+    versionedName:       Summit OS 2.0
+    shortVersionedName:  Summit 2.0
     bootloaderEntryName: SummitOS
     productUrl:          https://ubuntu.com
     supportUrl:          https://ubuntu.com

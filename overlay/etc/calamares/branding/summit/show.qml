@@ -15,9 +15,9 @@ Presentation {
     Image { anchors.fill: parent; source: "slide-bg.jpg"; fillMode: Image.PreserveAspectCrop; z: -2 }
     Rectangle { anchors.fill: parent; color: "#1b1240"; opacity: 0.35; z: -1 }
 
-    Slide { Card { glyph: "🏔️"; title: "Welcome to Summit 1.21"
-                   body: "Installing takes 10 to 20 minutes. Your Mac-style desktop, tuned for this iMac, is almost ready." } }
-    Slide { Card { glyph: "🎨"; title: "Seven iMac colours"
+    Slide { Card { glyph: "🏔️"; title: "Welcome to Summit 2.0"
+                   body: "Installing takes 10 to 20 minutes. Your Mac-style desktop, is almost ready." } }
+    Slide { Card { glyph: "🎨"; title: "Seven accent colours"
                    body: "Pick blue, purple, pink, orange, yellow, green or silver in Settings → Appearance. Light, Dark, or Auto at sunset." } }
     Slide { Card { glyph: "💧"; title: "Liquid Glass"
                    body: "The menu bar, dock, menus, Spotlight and Control Center are translucent glass that picks up your wallpaper." } }

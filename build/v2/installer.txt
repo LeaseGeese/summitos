@@ -1,0 +1,4 @@
+# The installer and what it needs. These are in the live image only: the installer removes itself and
+# everything it alone needed (about 300 MB of Qt and KDE libraries) from the system it installs.
+calamares qt6-qpa-plugins qt6-svg-plugins qml6-module-qtquick qml6-module-qtquick-window
+squashfs-tools

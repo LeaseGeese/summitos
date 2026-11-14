@@ -1,0 +1,7 @@
+#!/bin/sh
+# Summit 2.0 ships its Wi-Fi and Magic Mouse drivers ready-built for one exact kernel and carries no compiler.
+# Until Summit's own system updates deliver kernel and drivers together, keep Debian's updater from
+# replacing that kernel on its own (which would leave the computer without Wi-Fi).
+KV=$(ls /lib/modules | sort -V | tail -n 1)
+apt-mark hold linux-image-amd64 "linux-image-$KV" >/dev/null 2>&1
+exit 0

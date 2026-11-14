@@ -32,6 +32,9 @@ LOCK = "/run/summit-update.lock"
 UA = {"User-Agent": "SummitOS-Updater/1", "Accept": "application/vnd.github+json"}
 ALLOWED = ("etc/", "usr/", "opt/", "var/lib/summitos/")
 NEVER_OVERWRITE = {"etc/summit/update.json"}     # this computer's own update settings
+# parts of the USB (live) image that the installer removes from an installed system; updates must not bring them back
+LIVE_ONLY = ("etc/calamares/", "etc/live/", "etc/lightdm/lightdm.conf.d/90-summit-live.conf", "etc/xdg/autostart/summit-live-setup.desktop",
+             "usr/share/applications/summit-install.desktop", "usr/local/bin/summit-install", "usr/local/bin/summit-live-setup")
 KEEP_BACKUPS = 5
 DEFAULTS = {"repo": "", "branch": "main", "auto_install": False, "live": False, "interval_minutes": 360,
             # servers (only changed for testing against a local copy of GitHub)
@@ -161,7 +164,7 @@ def files_in(overlay):
     for root, dirs, files in os.walk(overlay):
         for n in files + [d for d in dirs if os.path.islink(os.path.join(root, d))]:
             rel = os.path.relpath(os.path.join(root, n), overlay)
-            if rel in NEVER_OVERWRITE: continue
+            if rel in NEVER_OVERWRITE or rel.startswith(LIVE_ONLY): continue
             if rel.startswith(ALLOWED): out.append(rel)
             else: log(f"skipping {rel} (outside allowed folders)")
     return sorted(out)
@@ -181,7 +184,7 @@ def missing(pkgs):
 
 def apt(pkgs_install, pkgs_remove):
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
-    wait = ("-o", "DPkg::Lock::Timeout=600")      # Ubuntu's own background updates may hold the lock for a while
+    wait = ("-o", "DPkg::Lock::Timeout=600")      # the system's own background updates may hold the lock for a while
     pkgs_install = missing(pkgs_install)            # already there: nothing to download
     if pkgs_install:
         log("installing packages: " + " ".join(pkgs_install))

@@ -1,9 +1,9 @@
 {
-  "version": "2.0.0",
-  "build": 20000,
+  "version": "2.0.2",
+  "build": 20002,
   "restart": "none",
   "notes": [
-    "Summit OS 2.0 alpha 1: Summit rebuilt from an empty system on Debian 13. A live image to try from a USB stick; it does not install yet."
+    "Summit OS 2.0 alpha 2: installs to a drive and takes its updates over the air"
   ],
   "apt": {
     "install": []

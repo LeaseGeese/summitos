@@ -7,7 +7,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"; V2="$REPO/build/v2"
 W="${1:-/var/tmp/summit2-build}"; R="$W/chroot"
-LABEL="${SUMMIT_LABEL:-2.0 alpha 1}"; FILEVER="${LABEL// /-}"
+LABEL="${SUMMIT_LABEL:-2.0 alpha 2}"; FILEVER="${LABEL// /-}"
 MIRROR=https://deb.debian.org/debian
 mounts() { for d in proc sys dev dev/pts; do mountpoint -q "$R/$d" || mount --bind "/$d" "$R/$d"; done; }
 umounts() { for d in dev/pts dev sys proc; do umount -l "$R/$d" 2>/dev/null || true; done; }
@@ -35,13 +35,18 @@ trap 'umounts; proxy_off' EXIT; mounts; proxy_on
 step "2 packages"
 run apt-get update -q
 run apt-get -y -q -o Dpkg::Options::=--force-confold upgrade
-run apt-get -y -q -o Dpkg::Options::=--force-confold install $(list "$V2/packages.txt")
+run apt-get -y -q -o Dpkg::Options::=--force-confold install $(list "$V2/packages.txt") $(list "$V2/installer.txt")
 run sh -c 'sed -i "s/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/" /etc/locale.gen && locale-gen >/dev/null && update-locale LANG=en_US.UTF-8'
 
 step "3 drivers (compiled now, so no compiler ships in the image)"
 KV=$(ls "$R/lib/modules" | sort -V | tail -1)
+# one kernel only: when Debian has published a newer one since the last build, the older one goes
+for k in $(ls "$R/lib/modules"); do
+  [ "$k" = "$KV" ] && continue
+  run apt-get -y -q purge "linux-image-$k" || true; rm -rf "$R/lib/modules/$k"
+done
 rm -rf "$R/lib/modules/$KV/updates" "$R/var/lib/dkms" "$R"/usr/src/summit-magicmouse-*   # never reuse a previous run's results
-mkdir -p "$R/usr/src"; cp -a "$REPO/overlay/usr/src/." "$R/usr/src/"
+mkdir -p "$R/usr/src"; cp -a "$V2/src/." "$R/usr/src/"
 run apt-get -y -q install $(list "$V2/build-only.txt")
 MM=$(basename "$R"/usr/src/summit-magicmouse-*); MMV=${MM#summit-magicmouse-}
 run sh -c "ls /lib/modules/$KV/updates/dkms/wl.ko* >/dev/null 2>&1 || dkms autoinstall -k $KV" || true
@@ -70,10 +75,11 @@ for f in systray pulseaudio whiskermenu; do
 done
 rm -f "$R/usr/local/lib/summitos/picom"
 cp -a "$REPO/overlay/." "$R/"
-cp -a "$V2/overlay/." "$R/"
-# not part of 2.0: the 1.x installer (2.0's installer comes in a later phase), Ubuntu's live system settings,
-# compiler sources, and Summit's own compositor build (Debian 13 ships the same version)
-rm -rf "$R/etc/calamares" "$R/etc/casper.conf" "$R/usr/share/applications/summit-install.desktop" "$R/usr/local/bin/summit-install" "$R"/usr/src/summit-magicmouse-*
+# not part of 2.0: Ubuntu's live system settings, compiler sources, and Summit's own compositor build
+# (Debian 13 ships the same version)
+rm -rf "$R"/usr/src/summit-magicmouse-*
+sed -i 's|findmnt -no SOURCE /cdrom|findmnt -no SOURCE /run/live/medium|' "$R/usr/local/bin/summit-install"
+grep -q /run/live/medium "$R/usr/local/bin/summit-install"
 ln -sf /usr/bin/picom "$R/usr/local/lib/summitos/picom"
 for f in xfce-shapes.svg xfce-x.svg; do      # the desktop's built-in default picture, shown for a moment at first login
   ln -sf /usr/share/backgrounds/summitos/summit-summit-light.jpg "$R/usr/share/backgrounds/xfce/$f"
@@ -91,7 +97,7 @@ for t in /usr/share/icons/Summit-* /usr/share/icons/hicolor; do gtk-update-icon-
 /usr/local/lib/summitos/bluetooth-setup >/dev/null || true
 dconf update; update-desktop-database -q /usr/share/applications || true
 plymouth-set-default-theme summit || true
-systemctl enable mbpfan zramswap NetworkManager lightdm avahi-daemon earlyoom summit-tune.service 2>/dev/null || true
+systemctl enable mbpfan zramswap NetworkManager lightdm avahi-daemon earlyoom summit-tune.service summit-update.timer 2>/dev/null || true
 systemctl disable smbd nmbd ssh ssh.socket NetworkManager-wait-online.service e2scrub_all.timer smartmontools 2>/dev/null || true
 systemctl --global enable summit-update-watch.path 2>/dev/null || true
 grep -qx applesmc /etc/modules || echo applesmc >> /etc/modules
@@ -108,6 +114,14 @@ DEBIAN_CODENAME=trixie
 HOME_URL="https://github.com/LeaseGeese/summitos"
 EOT
 echo "Summit OS $LABEL \n \l" > "$R/etc/issue"
+# the version this image is, so the updater only offers what is newer
+mkdir -p "$R/var/lib/summit-update"
+python3 - "$REPO/update.json" "$R/var/lib/summit-update/state.json" <<'PY'
+import json, sys, time
+u = json.load(open(sys.argv[1]))
+json.dump({"version": u["version"], "build": int(u["build"]), "sha": "", "installed_at": time.time(), "notes": u.get("notes", []),
+           "restart": "session", "changed": 0, "changed_files": [], "backup": ""}, open(sys.argv[2], "w"))
+PY
 ln -sf /usr/share/zoneinfo/America/Denver "$R/etc/localtime"; echo America/Denver > "$R/etc/timezone"
 echo summitos > "$R/etc/hostname"
 run update-initramfs -u -k all
